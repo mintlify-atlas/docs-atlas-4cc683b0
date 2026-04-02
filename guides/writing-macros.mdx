@@ -1,0 +1,267 @@
+---
+title: "Writing Swift macros"
+description: "Implement freestanding and attached Swift macros using SwiftSyntaxMacros and SwiftCompilerPlugin."
+---
+
+Swift macros are compile-time code transformations written in ordinary Swift. The compiler invokes your macro implementation — which is a separate executable — passing a syntax node, and your code returns new syntax nodes that replace or augment the original source.
+
+## Freestanding vs. attached macros
+
+<CardGroup cols={2}>
+  <Card title="Freestanding (#)">
+    Invoked with `#macroName(...)` syntax. Produces a new expression or declaration in place of the macro call.
+  </Card>
+  <Card title="Attached (@)">
+    Written as a custom attribute `@MacroName` on a declaration. Produces accessors, members, peers, or extensions for the annotated declaration.
+  </Card>
+</CardGroup>
+
+---
+
+## Freestanding macro protocols
+
+All freestanding macros conform to `FreestandingMacro` (which itself extends the base `Macro` protocol). You typically conform to one of its more specific sub-protocols:
+
+<Tabs>
+  <Tab title="ExpressionMacro">
+    Produces a single replacement expression. The macro is called with `#macroName(...)` and the expansion result is spliced in as an `ExprSyntax`.
+
+    ```swift
+    public protocol ExpressionMacro: FreestandingMacro {
+        static func expansion(
+            of node: some FreestandingMacroExpansionSyntax,
+            in context: some MacroExpansionContext
+        ) throws -> ExprSyntax
+    }
+    ```
+  </Tab>
+  <Tab title="DeclarationMacro">
+    Produces one or more declarations. The macro is called with `#macroName(...)` at declaration scope and the expansion results are inserted as top-level or member declarations.
+
+    ```swift
+    public protocol DeclarationMacro: FreestandingMacro {
+        static func expansion(
+            of node: some FreestandingMacroExpansionSyntax,
+            in context: some MacroExpansionContext
+        ) throws -> [DeclSyntax]
+
+        /// Whether to copy attributes from the macro call to expanded declarations.
+        /// Defaults to true.
+        static var propagateFreestandingMacroAttributes: Bool { get }
+
+        /// Whether to copy modifiers from the macro call to expanded declarations.
+        /// Defaults to true.
+        static var propagateFreestandingMacroModifiers: Bool { get }
+    }
+    ```
+  </Tab>
+</Tabs>
+
+---
+
+## Attached macro protocols
+
+All attached macros conform to `AttachedMacro`. The specific sub-protocol determines what kind of code the macro adds to the annotated declaration:
+
+<Tabs>
+  <Tab title="AccessorMacro">
+    Adds `get`, `set`, `willSet`, or `didSet` accessors to a stored property or subscript.
+
+    ```swift
+    public protocol AccessorMacro: AttachedMacro {
+        static func expansion(
+            of node: AttributeSyntax,
+            providingAccessorsOf declaration: some DeclSyntaxProtocol,
+            in context: some MacroExpansionContext
+        ) throws -> [AccessorDeclSyntax]
+    }
+    ```
+  </Tab>
+  <Tab title="MemberMacro">
+    Adds new member declarations (stored properties, methods, nested types) inside the annotated type.
+
+    ```swift
+    public protocol MemberMacro: AttachedMacro {
+        static func expansion(
+            of node: AttributeSyntax,
+            providingMembersOf declaration: some DeclGroupSyntax,
+            conformingTo protocols: [TypeSyntax],
+            in context: some MacroExpansionContext
+        ) throws -> [DeclSyntax]
+    }
+    ```
+  </Tab>
+  <Tab title="PeerMacro">
+    Introduces sibling declarations that appear alongside the annotated declaration in the same scope.
+
+    ```swift
+    public protocol PeerMacro: AttachedMacro {
+        static func expansion(
+            of node: AttributeSyntax,
+            providingPeersOf declaration: some DeclSyntaxProtocol,
+            in context: some MacroExpansionContext
+        ) throws -> [DeclSyntax]
+    }
+    ```
+  </Tab>
+  <Tab title="ExtensionMacro">
+    Synthesizes `extension` declarations for the annotated type, typically to add protocol conformances.
+
+    ```swift
+    public protocol ExtensionMacro: AttachedMacro {
+        static func expansion(
+            of node: AttributeSyntax,
+            attachedTo declaration: some DeclGroupSyntax,
+            providingExtensionsOf type: some TypeSyntaxProtocol,
+            conformingTo protocols: [TypeSyntax],
+            in context: some MacroExpansionContext
+        ) throws -> [ExtensionDeclSyntax]
+    }
+    ```
+  </Tab>
+</Tabs>
+
+---
+
+## MacroExpansionContext
+
+The `context` parameter gives your macro access to compiler services:
+
+| API | Description |
+|-----|-------------|
+| `makeUniqueName(_ name: String) -> TokenSyntax` | Generates a name guaranteed not to clash with any other identifier in the program. Use this for synthesized local variables or helper declarations. |
+| `diagnose(_ diagnostic: Diagnostic)` | Emits a compiler diagnostic (error, warning, or note) associated with a specific source location. |
+| `location(of node: some SyntaxProtocol) -> AbstractSourceLocation?` | Returns the `#fileID`, line, and column for a node, or `nil` if the node is not in a known source file. |
+| `lexicalContext: [Syntax]` | An array of enclosing syntactic contexts, from innermost outward (function body removed, member lists emptied). Useful for checking whether the macro is attached to a class vs. a struct, or inside a specific type. |
+
+```swift
+// Example: emit a diagnostic if the macro is applied to a class
+if declaration.is(ClassDeclSyntax.self) {
+    let diag = Diagnostic(
+        node: node,
+        message: MyDiagnosticMessage.classNotSupported
+    )
+    context.diagnose(diag)
+    return []
+}
+
+// Example: generate a unique variable name
+let tmpName = context.makeUniqueName("storage")
+// Produces something like: __macro_local_5storagefu_
+```
+
+---
+
+## CompilerPlugin entry point
+
+A macro target is compiled into a standalone executable. Your `@main` type conforms to `CompilerPlugin` and lists every macro type the plugin provides:
+
+```swift
+import SwiftCompilerPlugin
+import SwiftSyntaxMacros
+
+@main
+struct MyPlugin: CompilerPlugin {
+    let providingMacros: [Macro.Type] = [
+        StringifyMacro.self,
+        URLMacro.self,
+        CaseDetectionMacro.self,
+    ]
+}
+```
+
+The `CompilerPlugin` protocol requires only `init()` (used by the framework to instantiate the plugin) and `providingMacros`. The `main()` static method provided by the protocol extension sets up the IPC channel with the Swift compiler.
+
+---
+
+## Complete example: `#stringify`
+
+The `#stringify` macro — taken from the swift-syntax `MacroExamples` target — takes any expression and expands to a tuple of `(value, sourceCode)`:
+
+```swift
+// Usage
+let result = #stringify(x + y)
+// Expands to:
+// (x + y, "x + y")
+```
+
+**Macro declaration** (in your library target):
+
+```swift
+@freestanding(expression)
+public macro stringify<T>(_ value: T) -> (T, String) =
+    #externalMacro(module: "MyMacroPlugin", type: "StringifyMacro")
+```
+
+**Macro implementation** (in your plugin target):
+
+```swift
+import SwiftSyntax
+import SwiftSyntaxBuilder
+import SwiftSyntaxMacros
+
+public enum StringifyMacro: ExpressionMacro {
+    public static func expansion(
+        of node: some FreestandingMacroExpansionSyntax,
+        in context: some MacroExpansionContext
+    ) -> ExprSyntax {
+        guard let argument = node.arguments.first?.expression else {
+            fatalError("compiler bug: the macro does not have any arguments")
+        }
+
+        // Return a tuple of (original expression, its source text as a string literal)
+        return "(\(argument), \(literal: argument.description))"
+    }
+}
+```
+
+The string interpolation `\(literal: argument.description)` uses `SwiftSyntaxBuilder`'s `ExpressibleByLiteralSyntax` support to produce a correctly-escaped `StringLiteralExprSyntax` from the plain `String`.
+
+---
+
+## Example: `@CaseDetection` member macro
+
+The `CaseDetectionMacro` from the swift-syntax examples generates an `isXxx` Boolean computed property for every `enum` case:
+
+```swift
+import SwiftSyntax
+import SwiftSyntaxMacros
+
+public enum CaseDetectionMacro: MemberMacro {
+    public static func expansion(
+        of node: AttributeSyntax,
+        providingMembersOf declaration: some DeclGroupSyntax,
+        conformingTo: [TypeSyntax],
+        in context: some MacroExpansionContext
+    ) throws -> [DeclSyntax] {
+        declaration.memberBlock.members
+            .compactMap { $0.decl.as(EnumCaseDeclSyntax.self) }
+            .map { $0.elements.first!.name }
+            .map { ($0, $0.initialUppercased) }
+            .map { original, uppercased in
+                """
+                var is\(raw: uppercased): Bool {
+                    if case .\(raw: original) = self { return true }
+                    return false
+                }
+                """
+            }
+    }
+}
+```
+
+---
+
+## Tips
+
+<Tip>
+Prefer `throws` over `fatalError` in expansion methods. Throwing gives the compiler a chance to surface a helpful error diagnostic rather than crashing the plugin process.
+</Tip>
+
+<Warning>
+Macro expansions run in a sandbox with no network access and no file-system writes. Do not attempt to read files, make HTTP requests, or spawn child processes from within a macro.
+</Warning>
+
+<Note>
+The `FormatMode` used by the compiler for macro output is `.auto` by default, which means the compiler will format the expanded code. You can produce pre-formatted output, but adding whitespace via trivia is generally not necessary — the compiler's formatter will normalize it.
+</Note>

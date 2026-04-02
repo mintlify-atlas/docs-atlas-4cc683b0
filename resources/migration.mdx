@@ -1,0 +1,257 @@
+---
+title: "Migration Guide"
+description: "Breaking changes and migration steps when upgrading swift-syntax across major versions."
+---
+
+This guide covers the API-breaking changes in each major swift-syntax release. Work through the section that matches your current version and follow the steps in order.
+
+<Note>
+  The changelog is in reverse chronological order. If you are upgrading across multiple versions (e.g. Swift 5.2 → Swift 5.6), complete each migration section in sequence.
+</Note>
+
+---
+
+## Migrating to the `main` branch (post–Swift 5.6)
+
+<Warning>
+  `SwiftSyntaxParser` is deprecated. The module still exists as a thin compatibility wrapper over the new `SwiftParser`, but it will be removed in a future release. Migrate to `SwiftParser` as soon as possible.
+</Warning>
+
+<Steps>
+  <Step title="Replace SwiftSyntaxParser with SwiftParser">
+    The new `SwiftParser` module no longer requires a matching toolchain or the `_InternalSwiftSyntaxParser` shared library at runtime. It is fully self-contained.
+
+    ```swift
+    // Before
+    import SwiftSyntaxParser
+    let tree = try SyntaxParser.parse(source: source)
+
+    // After
+    import SwiftParser
+    let tree = Parser.parse(source: source)
+    ```
+  </Step>
+
+  <Step title="Remove _InternalSwiftSyntaxParser dependency">
+    Any build scripts or `Package.swift` files that bundle or link `_InternalSwiftSyntaxParser.dylib` can remove that dependency. `SwiftParser` has no such requirement.
+  </Step>
+</Steps>
+
+---
+
+## Migrating from Swift 5.5 to Swift 5.6
+
+<Steps>
+  <Step title="Update incremental parse edits to ConcurrentEdit">
+    `IncrementalParseTransition` now requires edits to be expressed as `ConcurrentEdit` values, which carry a guarantee that all edits are applied simultaneously (not sequentially).
+
+    If your edits were already specified as concurrent byte-range replacements, wrap each one in `ConcurrentEdit`. If they were sequential, use the provided conversion API to translate them.
+
+    ```swift
+    // Before — passing raw sequential edits
+    let transition = IncrementalParseTransition(edits: mySequentialEdits)
+
+    // After — use ConcurrentEdit
+    let concurrentEdits = mySequentialEdits.map { ConcurrentEdit($0) }
+    let transition = IncrementalParseTransition(edits: concurrentEdits)
+    ```
+  </Step>
+
+  <Step title="Move SwiftSyntaxParser imports to the new module">
+    `SwiftSyntaxParser` (the parser type and related types) now lives in its own module, separate from `SwiftSyntax`. This allows you to use `SwiftSyntax` for code generation without needing a compatible `_InternalSwiftSyntaxParser.dylib` present.
+
+    Add `import SwiftSyntaxParser` wherever you reference `SyntaxParser` or parser-specific types.
+
+    ```swift
+    import SwiftSyntax
+    import SwiftSyntaxParser  // add this
+    ```
+  </Step>
+
+  <Step title="Remove DiagnosticEngine usage">
+    <Warning>
+      `DiagnosticEngine` has been removed. Code that registers a `DiagnosticEngine` with `SyntaxParser` will no longer compile.
+    </Warning>
+
+    Pass a closure to `SyntaxParser` to receive diagnostics instead:
+
+    ```swift
+    // Before
+    let engine = DiagnosticEngine()
+    engine.addConsumer(MyConsumer())
+    let tree = try SyntaxParser.parse(source: source, diagnosticEngine: engine)
+
+    // After
+    let tree = try SyntaxParser.parse(source: source) { diagnostic in
+      // handle or record diagnostic
+      print(diagnostic)
+    }
+    ```
+  </Step>
+</Steps>
+
+---
+
+## Migrating from Swift 5.2 to Swift 5.3
+
+This release added new APIs but contained no breaking removals. No migration steps are required; adopt new APIs at your own pace.
+
+- `FunctionCallExprSyntax.additionalTrailingClosures` is now available for code that handles [SE-0279 Multiple Trailing Closures](https://github.com/apple/swift-evolution/blob/main/proposals/0279-multiple-trailing-closures.md).
+- `syntaxNodeType` is available on all `SyntaxProtocol` types as a debugging aid.
+
+---
+
+## Migrating from Swift 5.1 to Swift 5.2
+
+This was a large structural release. Swift 5.2 changed the syntax node hierarchy from protocol-based to struct-based for improved performance. Most call sites will need updates.
+
+### SyntaxVisitor and SyntaxAnyVisitor
+
+<Warning>
+  `SyntaxVisitor` and `SyntaxAnyVisitor` changed from protocols to classes. Any `struct` conforming to them must become a `class`, and implementing methods must be marked `override`.
+</Warning>
+
+<Steps>
+  <Step title="Convert visitor structs to classes">
+    ```swift
+    // Before
+    struct Visitor: SyntaxVisitor {
+      mutating func visit(_ node: EnumDeclSyntax) -> SyntaxVisitorContinueKind {
+        /* ... */
+      }
+    }
+
+    // After
+    class Visitor: SyntaxVisitor {
+      override func visit(_ node: EnumDeclSyntax) -> SyntaxVisitorContinueKind {
+        /* ... */
+      }
+    }
+    ```
+
+    Remove `mutating` from all visitor methods; classes do not use `mutating`.
+  </Step>
+
+  <Step title="Update the walk call site">
+    The `walk` method moved from the syntax node to the visitor.
+
+    ```swift
+    // Before
+    tree.walk(&visitor)
+
+    // After
+    visitor.walk(tree)
+    ```
+  </Step>
+</Steps>
+
+### Struct-based syntax node hierarchy
+
+<Warning>
+  The protocols `ExprSyntax`, `DeclSyntax`, `Syntax`, etc. no longer exist. They are now structs acting as type erasers. Swift's `is` and `as` operators no longer work for syntax casts — use the methods described below instead.
+</Warning>
+
+<Steps>
+  <Step title="Replace protocol extensions with protocol extensions on ...Protocol">
+    Extensions on the old syntax protocols must target the new `...Protocol` protocols.
+
+    ```swift
+    // Before
+    extension ExprSyntax {
+      func evaluateAsIntegerExpr() -> Int { /* ... */ }
+    }
+
+    // After
+    extension ExprSyntaxProtocol {
+      func evaluateAsIntegerExpr() -> Int { /* ... */ }
+    }
+    ```
+  </Step>
+
+  <Step title="Replace is-checks with the is(_:) method">
+    ```swift
+    // Before
+    exprSyntax is IdentifierExprSyntax
+
+    // After
+    exprSyntax.is(IdentifierExprSyntax.self)
+    ```
+  </Step>
+
+  <Step title="Replace as-downcasts with the as(_:) method">
+    ```swift
+    // Before
+    let id = exprSyntax as? IdentifierExprSyntax
+
+    // After
+    let id = exprSyntax.as(IdentifierExprSyntax.self)
+    ```
+  </Step>
+
+  <Step title="Make upcasts explicit">
+    Returning a concrete node where a type eraser is expected now requires an explicit initializer call.
+
+    ```swift
+    // Before
+    func foo() -> ExprSyntax {
+      return identifierExprSyntax  // implicit upcast
+    }
+
+    // After
+    func foo() -> ExprSyntax {
+      return ExprSyntax(identifierExprSyntax)  // explicit
+    }
+    ```
+  </Step>
+
+  <Step title="Replace uniqueIdentifier with id">
+    ```swift
+    // Before
+    let uid = node.uniqueIdentifier
+
+    // After
+    let uid = node.id  // SyntaxIdentifier; node also conforms to Identifiable
+    ```
+  </Step>
+
+  <Step title="Replace ReversedSyntaxChildren with reversed()">
+    `ReversedSyntaxChildren` has been removed. `SyntaxCollection` now conforms to `BidirectionalCollection`.
+
+    ```swift
+    // Before
+    for child in ReversedSyntaxChildren(collection) { }
+
+    // After
+    for child in collection.reversed() { }
+    ```
+  </Step>
+
+  <Step title="Replace isExpr / isDecl / isStmt / isType / isPattern">
+    The boolean convenience properties on `SyntaxNode` have been removed.
+
+    ```swift
+    // Before
+    node.isExpr
+    node.isDecl
+
+    // After
+    node.is(ExprSyntaxProtocol.self)
+    node.is(DeclSyntaxProtocol.self)
+    ```
+  </Step>
+</Steps>
+
+### Exhaustive switching with SyntaxEnum
+
+A new `SyntaxEnum` type enables exhaustive `switch` statements over all syntax kinds. Use `asSyntaxEnum` on any `Syntax` value:
+
+```swift
+let node: Syntax
+
+switch node.as(SyntaxEnum.self) {
+case .identifierExpr(let identifierExprSyntax):
+  // ...
+default:
+  break
+}
+```

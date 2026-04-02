@@ -1,0 +1,168 @@
+---
+title: "Installation"
+description: "Add swift-syntax to your Swift package or Xcode project."
+---
+
+<Tabs>
+  <Tab title="SwiftPM">
+    <Steps>
+      <Step title="Add the package dependency">
+        Open your `Package.swift` file and add swift-syntax to the `dependencies` array. Replace `<latest swift-syntax tag>` with the tag that matches your Swift toolchain (for example, `600.0.1` for Swift 6.0).
+
+        ```swift Package.swift
+        // swift-tools-version: 5.9
+        import PackageDescription
+
+        let package = Package(
+            name: "MyPackage",
+            dependencies: [
+                .package(
+                    url: "https://github.com/swiftlang/swift-syntax.git",
+                    from: "<latest swift-syntax tag>"
+                ),
+            ],
+            targets: [
+                .target(
+                    name: "MyTarget",
+                    dependencies: [
+                        .product(name: "SwiftParser", package: "swift-syntax"),
+                        .product(name: "SwiftSyntax", package: "swift-syntax"),
+                    ]
+                ),
+            ]
+        )
+        ```
+
+        <Note>
+          swift-syntax version numbers align with Swift releases. Use `509.x.x` for Swift 5.9, `510.x.x` for Swift 5.10, `600.x.x` for Swift 6.0, and `601.x.x` for Swift 6.1. Check the [releases page](https://github.com/swiftlang/swift-syntax/releases) for the latest tag.
+        </Note>
+      </Step>
+
+      <Step title="Choose the products you need">
+        Add only the products your target uses. The full list of available library products is:
+
+        | Product | Use when you need to… |
+        |---|---|
+        | `SwiftSyntax` | Work with syntax tree types, visitors, or rewriters |
+        | `SwiftParser` | Parse Swift source strings or byte buffers |
+        | `SwiftSyntaxBuilder` | Generate Swift source using a result-builder DSL |
+        | `SwiftSyntaxMacros` | Implement Swift macro protocols |
+        | `SwiftCompilerPlugin` | Build a compiler plugin executable |
+        | `SwiftDiagnostics` | Attach structured diagnostics to syntax nodes |
+        | `SwiftRefactor` | Build single-step refactoring passes |
+        | `SwiftIDEUtils` | Token classification and source-location utilities |
+        | `SwiftOperators` | Fold operator expressions by precedence |
+        | `SwiftBasicFormat` | Apply basic whitespace formatting to a syntax tree |
+        | `SwiftParserDiagnostics` | Parse-error diagnostics with recovery information |
+        | `SwiftIfConfig` | Evaluate `#if` configuration blocks |
+        | `SwiftLexicalLookup` | Lexical name lookup within a syntax tree |
+        | `SwiftSyntaxMacroExpansion` | Expand macros programmatically outside the compiler |
+        | `SwiftSyntaxMacrosTestSupport` | XCTest helpers for testing macro implementations |
+        | `SwiftSyntaxMacrosGenericTestSupport` | Testing helpers that work with any test framework |
+      </Step>
+
+      <Step title="Import and build">
+        Import the products you added in each Swift source file, then run `swift build`.
+
+        ```swift
+        import SwiftParser
+        import SwiftSyntax
+        ```
+      </Step>
+    </Steps>
+  </Tab>
+
+  <Tab title="Xcode">
+    <Steps>
+      <Step title="Open the Package Dependencies tab">
+        Open your Xcode project, select the project file in the navigator, then select the **Package Dependencies** tab.
+      </Step>
+
+      <Step title="Add the package">
+        Click the **+** button and search for:
+
+        ```
+        https://github.com/swiftlang/swift-syntax.git
+        ```
+
+        Choose the version rule that matches your Swift toolchain, then click **Add Package**.
+      </Step>
+
+      <Step title="Link the library products">
+        In the dialog that follows, select the library products you want to link to your target (for example, `SwiftParser` and `SwiftSyntax`), then click **Add Package**.
+      </Step>
+    </Steps>
+
+    <Note>
+      You can return to the Package Dependencies tab at any time to add or remove products.
+    </Note>
+  </Tab>
+
+  <Tab title="Bazel">
+    swift-syntax provides an experimental [Bazel](https://bazel.build) build configuration. Bzlmod support was added in release `509.0.0`. All available versions are listed in the [Bazel Central Registry](https://registry.bazel.build/modules/swift-syntax).
+
+    <Steps>
+      <Step title="Add with MODULE.bazel (recommended)">
+        Add the dependency to your `MODULE.bazel` file using `bazel_dep`:
+
+        ```python MODULE.bazel
+        bazel_dep(name = "swift-syntax", version = "600.0.1")
+        ```
+      </Step>
+
+      <Step title="Add with WORKSPACE (legacy)">
+        If your project uses a `WORKSPACE` file instead of `MODULE.bazel`, use `http_archive`:
+
+        ```python WORKSPACE
+        http_archive(
+            name = "SwiftSyntax",
+            sha256 = "f070fd44db9b33f430fd5b5d2700f1e2001c0028711859600e80cc975074fab0",
+            strip_prefix = "swift-syntax-509.1.0",
+            url = "https://github.com/apple/swift-syntax/archive/refs/tags/509.1.0.tar.gz",
+        )
+        ```
+
+        <Warning>
+          `MODULE.bazel` is the preferred and recommended approach. `WORKSPACE` support is maintained for compatibility but may be removed in a future release.
+        </Warning>
+      </Step>
+
+      <Step title="Depend on library targets">
+        Depend on the library targets defined in the [`BUILD.bazel`](https://github.com/swiftlang/swift-syntax/blob/main/BUILD.bazel) file at the root of the repository. Each library also has an associated `_opt` target (for example, `SwiftSyntax_opt`) that forces optimized builds, which can improve runtime performance at the cost of debuggability and initial build time.
+      </Step>
+    </Steps>
+
+    <Note>
+      Tag any Bazel-related issues on GitHub with the **Bazel** label.
+    </Note>
+  </Tab>
+</Tabs>
+
+## Platform support
+
+swift-syntax supports the following minimum deployment targets, as declared in `Package.swift`:
+
+```swift
+platforms: [
+    .macOS(.v10_15),
+    .iOS(.v13),
+    .tvOS(.v13),
+    .watchOS(.v6),
+    .macCatalyst(.v13),
+]
+```
+
+## Version alignment
+
+swift-syntax version numbers are aligned with Swift releases. The table below shows the correspondence:
+
+| swift-syntax | Swift |
+|---|---|
+| 509.x.x | Swift 5.9 |
+| 510.x.x | Swift 5.10 |
+| 600.x.x | Swift 6.0 |
+| 601.x.x | Swift 6.1 |
+
+<Warning>
+Using a swift-syntax version that does not match your Swift toolchain is not supported and can result in build failures or incorrect macro behavior.
+</Warning>

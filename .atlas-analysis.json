@@ -1,0 +1,107 @@
+{
+  "projectType": "sdk-library",
+  "projectName": "swift-syntax",
+  "projectDescription": "A set of Swift libraries for parsing, inspecting, generating, and transforming Swift source code, forming the backbone of Swift's macro system.",
+  "theme": "luma",
+  "primaryColor": "#fb502d",
+  "lightColor": "#fb9252",
+  "darkColor": "#fc7c7c",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "installation",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/syntax-tree",
+              "concepts/parsing",
+              "concepts/trivia",
+              "concepts/diagnostics"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/traversing-syntax-trees",
+              "guides/building-syntax",
+              "guides/writing-macros",
+              "guides/refactoring",
+              "guides/incremental-parsing"
+            ]
+          },
+          {
+            "group": "Resources",
+            "pages": [
+              "resources/examples",
+              "resources/migration",
+              "resources/changelog"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Core Libraries",
+            "pages": [
+              "api/swift-syntax",
+              "api/swift-parser",
+              "api/swift-syntax-builder"
+            ]
+          },
+          {
+            "group": "Macros",
+            "pages": [
+              "api/swift-syntax-macros",
+              "api/swift-syntax-macro-expansion",
+              "api/swift-compiler-plugin"
+            ]
+          },
+          {
+            "group": "Utilities",
+            "pages": [
+              "api/swift-diagnostics",
+              "api/swift-refactor",
+              "api/swift-ide-utils",
+              "api/swift-operators"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Source-accurate Swift syntax tree (SwiftSyntax) with full round-trip fidelity",
+    "Pure-Swift parser (SwiftParser) with no toolchain dependency",
+    "Swift macro authoring and expansion via SwiftSyntaxMacros and SwiftCompilerPlugin",
+    "Result-builder-based code generation with SwiftSyntaxBuilder",
+    "Structured diagnostics with fix-its via SwiftDiagnostics",
+    "Code refactoring transformations via SwiftRefactor",
+    "Incremental reparsing support for editor integrations",
+    "IDE utilities including syntax classification and fix-it application"
+  ],
+  "publicApiSurface": [
+    "SwiftSyntax — SyntaxProtocol, SyntaxVisitor, SyntaxRewriter, SyntaxCollection, TokenSyntax, Trivia",
+    "SwiftParser — Parser.parse(source:), IncrementalParseTransition",
+    "SwiftSyntaxBuilder — result builder DSL for constructing syntax nodes",
+    "SwiftSyntaxMacros — Macro, ExpressionMacro, DeclarationMacro, AccessorMacro, MemberMacro, PeerMacro, ExtensionMacro, FreestandingMacro, AttachedMacro",
+    "SwiftCompilerPlugin — CompilerPlugin protocol, @main entry point",
+    "SwiftDiagnostics — Diagnostic, DiagnosticMessage, FixIt, Note, DiagnosticsFormatter",
+    "SwiftRefactor — SyntaxRefactoringProvider, EditRefactoringProvider",
+    "SwiftIDEUtils — SyntaxClassification, FixItApplier, NameMatcher",
+    "SwiftOperators — OperatorTable, operator precedence folding",
+    "SwiftBasicFormat — BasicFormat for canonical whitespace formatting",
+    "SwiftIfConfig — compile-condition evaluation (#if/#else)",
+    "SwiftLexicalLookup — lexical scope and name lookup"
+  ]
+}

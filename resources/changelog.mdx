@@ -1,0 +1,126 @@
+---
+title: "Changelog"
+description: "Version history and release notes for swift-syntax."
+---
+
+<Note>
+  This page reflects the contents of [`Changelog.md`](https://github.com/swiftlang/swift-syntax/blob/main/Changelog.md) in the swift-syntax repository. For the latest tagged releases and associated assets, see the [GitHub Releases page](https://github.com/swiftlang/swift-syntax/releases).
+</Note>
+
+<AccordionGroup>
+
+  <Accordion title="main (unreleased)">
+
+    ### SwiftParser replaces SwiftSyntaxParser
+
+    The new `SwiftParser` module supersedes `SwiftSyntaxParser`. The old module is now deprecated and remains only as a thin wrapper over `SwiftParser` for backwards compatibility.
+
+    **Key change:** `SwiftParser` no longer requires a matching toolchain or the `_InternalSwiftSyntaxParser` shared library to function. It is fully self-contained.
+
+    See the [Migration Guide](/resources/migration#migrating-to-the-main-branch-post-swift-56) for steps to update your code.
+
+  </Accordion>
+
+  <Accordion title="Swift 5.6">
+
+    ### ConcurrentEdit for incremental parsing
+
+    Introduced a new `ConcurrentEdit` type for use with `IncrementalParseTransition`. The type makes explicit that all edits are applied concurrently (not sequentially), and provides a conversion path from sequentially applied edits.
+
+    ### SwiftSyntaxParser is now a separate module
+
+    The `SyntaxParser` type and related parser-specific types moved into their own `SwiftSyntaxParser` module, separate from `SwiftSyntax`. This allows `SwiftSyntax` to be used for code generation without needing a compatible `_InternalSwiftSyntaxParser.dylib` on the system.
+
+    Add `import SwiftSyntaxParser` wherever you use the parser.
+
+    ### DiagnosticEngine removed
+
+    `DiagnosticEngine` has been removed. `SyntaxParser` now accepts a closure through which it emits diagnostics. Use the closure to handle diagnostics or implement your own diagnostics engine:
+
+    ```swift
+    let tree = try SyntaxParser.parse(source: source) { diagnostic in
+      print(diagnostic)
+    }
+    ```
+
+  </Accordion>
+
+  <Accordion title="Swift 5.3">
+
+    ### Multiple trailing closures support
+
+    Added `FunctionCallExprSyntax.additionalTrailingClosures` with type `MultipleTrailingClosureElementListSyntax?` to support [SE-0279 Multiple Trailing Closures](https://github.com/apple/swift-evolution/blob/main/proposals/0279-multiple-trailing-closures.md).
+
+    ### syntaxNodeType property
+
+    Added a `syntaxNodeType` property to all types conforming to `SyntaxProtocol`. Returns the underlying syntax node type. Intended primarily as a debugging aid during development.
+
+    ### Improved parser compatibility error message
+
+    The "parser compatibility" error now provides a clearer diagnostic message.
+
+  </Accordion>
+
+  <Accordion title="Swift 5.2">
+
+    This release restructured the syntax node hierarchy from protocols to structs for improved performance, and introduced several API removals and additions.
+
+    ### Removals
+
+    - **`ReversedSyntaxChildren` removed** — use `collection.reversed()` instead. `SyntaxCollection` now conforms to `BidirectionalCollection` (upgraded from `Sequence`).
+    - **`isExpr`, `isDecl`, `isStmt`, `isType`, `isPattern` removed from `SyntaxNode`** — use `node.is(ExprSyntaxProtocol.self)` etc. instead.
+    - **`uniqueIdentifier` removed from syntax nodes and `SyntaxNode`** — use the new `id` property or the `Identifiable` conformance instead.
+    - **`walk` removed from syntax nodes** — call `walk` on the `SyntaxVisitor` instead:
+      ```swift
+      // Before
+      tree.walk(&visitor)
+
+      // After
+      visitor.walk(tree)
+      ```
+
+    ### SyntaxVisitor and SyntaxAnyVisitor changed to classes
+
+    For performance, `SyntaxVisitor` and `SyntaxAnyVisitor` changed from protocols to classes. Conforming `struct` types must become `class` types; implementing methods must be marked `override` and `mutating` keywords must be removed.
+
+    ```swift
+    // Before
+    struct Visitor: SyntaxVisitor {
+      mutating func visit(_ node: EnumDeclSyntax) -> SyntaxVisitorContinueKind { ... }
+    }
+
+    // After
+    class Visitor: SyntaxVisitor {
+      override func visit(_ node: EnumDeclSyntax) -> SyntaxVisitorContinueKind { ... }
+    }
+    ```
+
+    ### Struct-based syntax node hierarchy
+
+    Syntax protocols (`ExprSyntax`, `DeclSyntax`, `Syntax`, etc.) are now structs used as type erasers. The former protocols are now named `ExprSyntaxProtocol`, `DeclSyntaxProtocol`, etc.
+
+    | Operation | Before | After |
+    |-----------|--------|-------|
+    | Type check | `exprSyntax is IdentifierExprSyntax` | `exprSyntax.is(IdentifierExprSyntax.self)` |
+    | Downcast | `exprSyntax as? IdentifierExprSyntax` | `exprSyntax.as(IdentifierExprSyntax.self)` |
+    | Upcast | implicit | `ExprSyntax(identifierExprSyntax)` |
+    | Extend all expressions | `extension ExprSyntax { }` | `extension ExprSyntaxProtocol { }` |
+
+    ### New: SyntaxEnum for exhaustive switching
+
+    `SyntaxEnum` enables exhaustive `switch` statements over all syntax node kinds. Construct it via `asSyntaxEnum` on any `Syntax` value:
+
+    ```swift
+    switch node.as(SyntaxEnum.self) {
+    case .identifierExpr(let identifierExprSyntax):
+      // ...
+    }
+    ```
+
+    ### New: Identifiable conformance
+
+    All syntax nodes and `SyntaxNode` now conform to `Identifiable` using `SyntaxIdentifier` as the `ID` type.
+
+  </Accordion>
+
+</AccordionGroup>

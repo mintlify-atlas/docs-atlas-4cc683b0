@@ -1,0 +1,229 @@
+---
+title: "Implementing Refactoring Actions"
+description: "Create source transformations using SwiftRefactor's SyntaxRefactoringProvider and EditRefactoringProvider protocols."
+---
+
+SwiftRefactor gives you two protocols for expressing source transformations. Use `SyntaxRefactoringProvider` when your refactoring produces a new syntax node that replaces the input. Use `EditRefactoringProvider` when you need to express the change as a set of textual edits on the original source buffer.
+
+## Choosing a protocol
+
+<CardGroup cols={2}>
+  <Card title="SyntaxRefactoringProvider">
+    Returns a replacement syntax node. Best when you are restructuring the tree — adding, removing, or reordering child nodes.
+  </Card>
+  <Card title="EditRefactoringProvider">
+    Returns `[SourceEdit]` — byte-range replacements on the original source. Best when the transformation is inherently textual or crosses node boundaries.
+  </Card>
+</CardGroup>
+
+`SyntaxRefactoringProvider` inherits from `EditRefactoringProvider` and provides a default `textRefactor` implementation that wraps the structural output in a single replacement edit, so you only need to implement one method.
+
+---
+
+## SyntaxRefactoringProvider
+
+```swift
+public protocol SyntaxRefactoringProvider: EditRefactoringProvider {
+    associatedtype Input: SyntaxProtocol
+    associatedtype Output: SyntaxProtocol
+    associatedtype Context = Void
+
+    static func refactor(syntax: Input, in context: Context) throws -> Output
+}
+```
+
+When `Context` is `Void` (the default), a convenience overload lets you call `refactor(syntax:)` without passing a context argument.
+
+The returned `Output` is treated as a complete replacement for the `Input` node. SwiftSyntax trees are immutable — every `with` call produces a new tree, leaving the original untouched.
+
+---
+
+## EditRefactoringProvider
+
+```swift
+public protocol EditRefactoringProvider {
+    associatedtype Input: SyntaxProtocol
+    associatedtype Context = Void
+
+    static func textRefactor(syntax: Input, in context: Context) throws -> [SourceEdit]
+}
+```
+
+Return an empty array when the refactoring is not applicable. Throwing an error is reserved for genuinely unexpected failures; tools that call your refactoring action typically treat an empty result as a no-op.
+
+---
+
+## Signaling failure with RefactoringNotApplicableError
+
+Throw `RefactoringNotApplicableError` when the refactoring cannot be applied to the given node:
+
+```swift
+throw RefactoringNotApplicableError("call already uses trailing closures")
+```
+
+The error message should start with a lowercase letter and read like a compiler diagnostic — for example, `"not a call"` or `"getter is missing or empty"`.
+
+---
+
+## Preflight validation
+
+Because SwiftSyntax can parse and represent malformed source, your refactoring action may receive nodes that are structurally incomplete. Validate the node's structure before doing any work and fail fast if the preconditions are not met.
+
+```swift
+public static func refactor(
+    syntax: VariableDeclSyntax,
+    in context: ()
+) throws -> VariableDeclSyntax {
+    // Preflight: require exactly one binding
+    guard syntax.bindings.count == 1, let binding = syntax.bindings.first else {
+        throw RefactoringNotApplicableError("unsupported variable declaration")
+    }
+
+    // Preflight: require a non-empty getter block
+    guard let accessorBlock = binding.accessorBlock,
+          case let .getter(body) = accessorBlock.accessors,
+          !body.isEmpty
+    else {
+        throw RefactoringNotApplicableError("getter is missing or empty")
+    }
+
+    // ... perform the transformation
+}
+```
+
+<Tip>
+Check every structural assumption at the top of `refactor` or `textRefactor`, before allocating any intermediate syntax nodes. This keeps the failure path cheap and makes the happy path easier to follow.
+</Tip>
+
+---
+
+## Example: converting calls to trailing-closure syntax
+
+The built-in `CallToTrailingClosures` refactoring converts a call like:
+
+```swift
+someCall(closure1: { arg in return 1 }, closure2: { arg in return 2 })
+```
+
+to trailing-closure syntax:
+
+```swift
+someCall { arg in return 1 } closure2: { arg in return 2 }
+```
+
+Here is how it is structured:
+
+<Steps>
+  <Step title="Define Input, Output, and Context">
+    `Input` and `Output` are both `Syntax` (the type-erased node) because the method accepts any call-like node. The `Context` carries an optional starting argument index.
+
+    ```swift
+    public struct CallToTrailingClosures: SyntaxRefactoringProvider {
+        public struct Context {
+            public let startAtArgument: Int
+
+            public init(startAtArgument: Int = 0) {
+                self.startAtArgument = startAtArgument
+            }
+        }
+
+        public typealias Input = Syntax
+        public typealias Output = Syntax
+    }
+    ```
+  </Step>
+
+  <Step title="Implement refactor with preflight checks">
+    Cast the generic `Syntax` node to the expected protocol before doing any work. Fail immediately if the cast fails.
+
+    ```swift
+    public static func refactor(
+        syntax: Syntax,
+        in context: Context = Context()
+    ) throws -> Syntax {
+        guard let call = syntax.asProtocol(CallLikeSyntax.self) else {
+            throw RefactoringNotApplicableError("not a call")
+        }
+        // Delegate to the typed helper so the generic constraint is preserved
+        return try Syntax(fromProtocol: _refactor(syntax: call, in: context))
+    }
+    ```
+  </Step>
+
+  <Step title="Check applicability before transforming">
+    Validate that the call does not already use trailing closures and that there are closure arguments to convert.
+
+    ```swift
+    guard trailingClosure == nil,
+          additionalTrailingClosures.isEmpty,
+          leftParen != nil,
+          rightParen != nil
+    else {
+        throw RefactoringNotApplicableError("call already uses trailing closures")
+    }
+
+    guard !closures.isEmpty else {
+        throw RefactoringNotApplicableError("no arguments to convert to closures")
+    }
+    ```
+  </Step>
+
+  <Step title="Build and return the transformed node">
+    Use `with` to produce an updated copy of the call with the argument list and trailing closures set correctly.
+
+    ```swift
+    var converted = self.detached
+    converted.arguments = LabeledExprListSyntax(argList)
+    converted.trailingClosure = trailingClosure
+    if !additionalTrailingClosures.isEmpty {
+        converted.additionalTrailingClosures =
+            MultipleTrailingClosureElementListSyntax(additionalTrailingClosures)
+    }
+    return converted
+    ```
+  </Step>
+</Steps>
+
+---
+
+## Implementing EditRefactoringProvider directly
+
+Use `EditRefactoringProvider` when your transformation cannot be expressed as a single node replacement. Return `[]` when the action does not apply:
+
+```swift
+public struct NormalizeImportOrder: EditRefactoringProvider {
+    public typealias Input = SourceFileSyntax
+
+    public static func textRefactor(syntax: SourceFileSyntax, in context: ()) throws -> [SourceEdit] {
+        let importDecls = syntax.statements.filter { /* ... */ }
+
+        // Nothing to do
+        guard importDecls.count > 1 else { return [] }
+
+        // Build edits that replace each import with a reordered version
+        var edits: [SourceEdit] = []
+        // ...
+        return edits
+    }
+}
+```
+
+<Note>
+`SyntaxRefactoringProvider` provides a default `textRefactor` that emits a single `SourceEdit.replace` covering the entire input node. If you conform to `SyntaxRefactoringProvider`, you do not need to implement `textRefactor` yourself unless you want a different edit strategy.
+</Note>
+
+---
+
+## Tips
+
+<Tip>
+Fail fast — validate all preconditions at the top of the method before constructing any intermediate nodes.
+</Tip>
+
+<Tip>
+Return `[]` (or throw `RefactoringNotApplicableError`) when the action is not applicable. Do not return a no-op edit that replaces a node with an identical copy.
+</Tip>
+
+<Note>
+SwiftSyntax trees are immutable. Every structural change — calling `with(\.someChild, newValue)` — produces a new tree. The original node is never modified.
+</Note>

@@ -1,0 +1,176 @@
+---
+title: "Trivia"
+description: "Whitespace, comments, and other non-semantic text attached to syntax tokens."
+---
+
+**Trivia** is source text that does not affect the meaning of a Swift program but must be preserved to round-trip the source faithfully. Examples include spaces, newlines, and comments. In swift-syntax, trivia is attached to `TokenSyntax` nodes rather than to layout nodes.
+
+<Note>
+Every byte of the original source file lives either inside a token's text or inside its leading or trailing trivia. Printing the entire syntax tree always produces output that is byte-for-byte identical to the original source.
+</Note>
+
+## Leading and trailing trivia
+
+Each `TokenSyntax` carries two trivia collections:
+
+| Property | Description |
+|---|---|
+| `leadingTrivia` | Trivia that appears **before** the token's text |
+| `trailingTrivia` | Trivia that appears **after** the token's text, up to (but not including) the leading trivia of the next token |
+
+By convention, trivia is "glued" to the following token as leading trivia wherever possible. For example, the newline at the end of a line is typically the leading trivia of the first token on the next line.
+
+```swift
+import SwiftParser
+import SwiftSyntax
+
+let source = "  let x = 42  // answer\n"
+let tree = Parser.parse(source: source)
+
+if let varDecl = tree.statements.first?.item.as(VariableDeclSyntax.self) {
+    let letToken = varDecl.bindingSpecifier
+    print(letToken.leadingTrivia)   // "  " (two spaces)
+    print(letToken.text)            // "let"
+
+    // The trailing trivia of the last token in the declaration includes "  "
+    // and the line comment
+}
+```
+
+## `TriviaPiece` — the unit of trivia
+
+A `Trivia` value is a collection of `TriviaPiece` values. Each piece represents a contiguous run of a single trivia kind:
+
+```swift
+public enum TriviaPiece: Sendable {
+    case backslashes(Int)           // \ at end of line in multi-line string
+    case blockComment(String)       // /* ... */
+    case carriageReturns(Int)       // \r
+    case carriageReturnLineFeeds(Int) // \r\n
+    case docBlockComment(String)    // /** ... */
+    case docLineComment(String)     // /// ...
+    case formfeeds(Int)             // \f
+    case lineComment(String)        // // ...
+    case newlines(Int)              // \n
+    case pounds(Int)                // # at end of line in multi-line string
+    case spaces(Int)                // space characters
+    case tabs(Int)                  // \t
+    case unexpectedText(String)     // skipped unexpected text
+    case verticalTabs(Int)          // \v
+}
+```
+
+Count-based pieces (`.spaces`, `.newlines`, `.tabs`, etc.) represent multiple identical characters as a single piece. For example, four spaces is `.spaces(4)`, not four separate `.spaces(1)` pieces.
+
+## Reading trivia
+
+`Trivia` conforms to `Collection` with `TriviaPiece` as its element, so you can iterate it directly:
+
+```swift
+import SwiftParser
+import SwiftSyntax
+
+let source = """
+// This is a comment
+func hello() {}
+"""
+let tree = Parser.parse(source: source)
+
+if let funcDecl = tree.statements.first?.item.as(FunctionDeclSyntax.self) {
+    for piece in funcDecl.funcKeyword.leadingTrivia {
+        switch piece {
+        case .lineComment(let text):
+            print("comment:", text)     // "// This is a comment"
+        case .newlines(let count):
+            print("newlines:", count)   // 1
+        default:
+            break
+        }
+    }
+}
+```
+
+You can also use `trivia.pieces` to access the underlying array directly:
+
+```swift
+let pieces: [TriviaPiece] = token.leadingTrivia.pieces
+```
+
+## Modifying trivia
+
+Syntax nodes are immutable. To change the trivia on a token, use `with(_:_:)` to produce a copy of the node with the trivia replaced:
+
+```swift
+import SwiftSyntax
+
+var token: TokenSyntax = ...
+
+// Replace all leading trivia with a single newline
+let modified = token.with(\.leadingTrivia, [.newlines(1)])
+
+// Add a trailing space without removing existing trivia
+let withSpace = token.with(\.trailingTrivia, token.trailingTrivia + [.spaces(1)])
+```
+
+Because modification propagates up through the tree (producing a new root), you can also assign directly to `leadingTrivia` or `trailingTrivia` on a `var` binding:
+
+```swift
+var funcDecl: FunctionDeclSyntax = ...
+funcDecl.funcKeyword.leadingTrivia = [.newlines(1), .spaces(4)]
+```
+
+<Tip>
+When writing a `SyntaxRewriter`, prefer producing a node with the desired trivia inside `visitPost` rather than modifying the original tree directly. This keeps rewriters composable.
+</Tip>
+
+## Building trivia
+
+`Trivia` conforms to `ExpressibleByArrayLiteral`, so you can construct it from an array literal of `TriviaPiece` values:
+
+```swift
+let trivia: Trivia = [.newlines(1), .spaces(4)]
+```
+
+You can also append or merge trivia:
+
+```swift
+let base: Trivia = [.newlines(1)]
+let indented = base.appending(.spaces(4))
+// or using the + operator:
+let indented2 = base + [.spaces(4)]
+```
+
+## Source accuracy
+
+The `description` property on any `SyntaxProtocol` node returns the full source text including all trivia. Concatenating the `description` of all tokens in the tree reproduces the original source byte-for-byte:
+
+```swift
+let source = "  func   foo ( ) {}\n"
+let tree = Parser.parse(source: source)
+print(tree.description == source)   // true
+```
+
+If you want the source text of a node without its surrounding trivia, use `trimmedDescription`:
+
+```swift
+let funcDecl: FunctionDeclSyntax = ...
+print(funcDecl.trimmedDescription)   // e.g. "func foo() {}"
+```
+
+## Trivia on layout nodes
+
+`leadingTrivia` and `trailingTrivia` are available on all `SyntaxProtocol` nodes, not just tokens. For a layout node:
+
+- `node.leadingTrivia` returns the leading trivia of the **first token** in the subtree.
+- `node.trailingTrivia` returns the trailing trivia of the **last token** in the subtree.
+
+Setting `node.leadingTrivia` rewrites the leading trivia of that first token.
+
+<CardGroup cols={2}>
+  <Card title="The syntax tree" href="/concepts/syntax-tree">
+    See how trivia relates to the overall tree structure.
+  </Card>
+  <Card title="Parsing" href="/concepts/parsing">
+    Learn how the parser attaches trivia to tokens.
+  </Card>
+</CardGroup>

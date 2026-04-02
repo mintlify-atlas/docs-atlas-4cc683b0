@@ -1,0 +1,230 @@
+---
+title: "SwiftSyntaxMacroExpansion"
+description: "Macro expansion engine — expand macros in-process without the Swift compiler."
+---
+
+## Overview
+
+`SwiftSyntaxMacroExpansion` is the runtime counterpart to `SwiftSyntaxMacros`. Where `SwiftSyntaxMacros` defines the *protocols* a macro implementation type conforms to, `SwiftSyntaxMacroExpansion` provides the *engine* that drives those implementations: it walks a syntax tree, finds macro invocations, calls the appropriate `expansion` methods, and splices the results back into the tree — all without invoking the Swift compiler.
+
+Typical uses:
+
+- **Macro unit tests** — expand a source string in-process and assert on the result.
+- **Source tooling** — editors, linters, or code generators that need to evaluate macros at analysis time.
+
+For writing macro implementations, see [SwiftSyntaxMacros](/api/swift-syntax-macros). For wiring a macro into the compiler as a plugin, see [SwiftCompilerPlugin](/api/swift-compiler-plugin).
+
+---
+
+## `MacroRole`
+
+An enum that names each role a macro can play. Passed to the low-level expansion functions to select which protocol method to invoke.
+
+```swift
+public enum MacroRole: Sendable {
+  case expression
+  case declaration
+  case accessor
+  case memberAttribute
+  case member
+  case peer
+  case conformance
+  case codeItem
+  case `extension`
+  case body
+  @_spi(ExperimentalLanguageFeatures) case preamble
+}
+```
+
+---
+
+## `MacroSpec`
+
+Bundles a macro implementation type together with an optional list of conformances it should synthesize. Used when the caller needs to tell the expansion engine which protocols the expanded type should conform to (e.g. for `MemberMacro` and `ExtensionMacro`).
+
+```swift
+public struct MacroSpec: Sendable {
+  /// The macro implementation type (must conform to at least one macro protocol).
+  let type: Macro.Type
+
+  /// Protocol types that will be passed as the `conformingTo:` parameter
+  /// of the macro's `expansion` function.
+  let conformances: [TypeSyntax]
+
+  public init(type: Macro.Type, conformances: [TypeSyntax] = [])
+}
+```
+
+---
+
+## Expanding macros on a syntax tree
+
+The primary entry point for whole-tree expansion is an extension on `SyntaxProtocol`. Call it on any syntax node to get back a new tree with all known macros expanded.
+
+```swift
+extension SyntaxProtocol {
+
+  /// Expand all uses of the given macros within this node.
+  /// Supply a `contextGenerator` closure that produces a fresh
+  /// `MacroExpansionContext` for each expansion site.
+  public func expand<Context: MacroExpansionContext>(
+    macros: [String: Macro.Type],
+    contextGenerator: @escaping (Syntax) -> Context,
+    indentationWidth: Trivia? = nil
+  ) -> Syntax
+
+  /// Variant that also accepts per-macro conformance lists.
+  public func expand<Context: MacroExpansionContext>(
+    macroSpecs: [String: MacroSpec],
+    contextGenerator: @escaping (Syntax) -> Context,
+    indentationWidth: Trivia? = nil
+  ) -> Syntax
+}
+```
+
+The dictionary key is the macro's name as it appears in source (without the `#` or `@`). Pass a `contextGenerator` rather than a single context so that each expansion gets an appropriately scoped `BasicMacroExpansionContext`.
+
+### Minimal in-process expansion
+
+```swift
+import SwiftSyntax
+import SwiftSyntaxMacros
+import SwiftSyntaxMacroExpansion
+import SwiftParser
+
+let source = """
+  let x = #stringify(1 + 2)
+  """
+
+let tree = Parser.parse(source: source)
+
+let context = BasicMacroExpansionContext(
+  sourceFiles: [tree: .init(moduleName: "MyModule", fullFilePath: "test.swift")]
+)
+
+let expanded = tree.expand(
+  macros: ["stringify": StringifyMacro.self],
+  contextGenerator: { _ in context }
+)
+
+print(expanded)
+// let x = (1 + 2, "1 + 2")
+```
+
+---
+
+## Low-level expansion functions
+
+These functions expand a single macro node and return the raw source `String`. They are useful when you need precise control over which role is applied or when integrating with a custom pipeline.
+
+### `expandFreestandingMacro`
+
+```swift
+public func expandFreestandingMacro(
+  definition: Macro.Type,
+  macroRole: MacroRole,
+  node: FreestandingMacroExpansionSyntax,
+  in context: some MacroExpansionContext,
+  indentationWidth: Trivia? = nil
+) -> String?
+```
+
+Calls the matching `ExpressionMacro`, `DeclarationMacro`, or `CodeItemMacro` expansion method depending on `macroRole`. Returns `nil` on failure; diagnostics are added to `context`.
+
+### `expandAttachedMacro`
+
+```swift
+public func expandAttachedMacro<Context: MacroExpansionContext>(
+  definition: Macro.Type,
+  macroRole: MacroRole,
+  attributeNode: AttributeSyntax,
+  node: some SyntaxProtocol,
+  parentDeclNode: DeclSyntax?,
+  extendedType: TypeSyntax?,
+  conformanceList: InheritedTypeListSyntax?,
+  in context: Context,
+  indentationWidth: Trivia? = nil
+) -> String?
+```
+
+Collapses all expanded source strings into a single `String`. Use `expandAttachedMacroWithoutCollapsing` if you need the individual per-declaration strings.
+
+### `inferFreestandingMacroRole`
+
+```swift
+public func inferFreestandingMacroRole(definition: Macro.Type) throws -> MacroRole
+```
+
+Infers the `MacroRole` for a freestanding macro from the protocols it conforms to. Useful for tooling that talks to plugins built against older compilers.
+
+---
+
+## `BasicMacroExpansionContext`
+
+A concrete `MacroExpansionContext` designed for testing and tooling. It implements all protocol requirements and accumulates diagnostics into a `diagnostics` array that you can inspect after expansion.
+
+```swift
+public class BasicMacroExpansionContext: MacroExpansionContext {
+
+  /// Associates a source file syntax node with its on-disk module and path.
+  public struct KnownSourceFile {
+    public let moduleName: String
+    public let fullFilePath: String
+    public init(moduleName: String, fullFilePath: String)
+  }
+
+  /// Accumulated diagnostics emitted during expansion.
+  public private(set) var diagnostics: [Diagnostic]
+
+  /// The lexical context nodes passed at init time.
+  public let lexicalContext: [Syntax]
+
+  /// Create a context for one or more source files.
+  public init(
+    lexicalContext: [Syntax] = [],
+    expansionDiscriminator: String = "__macro_local_",
+    sourceFiles: [SourceFileSyntax: KnownSourceFile] = [:],
+    buildConfiguration: (any BuildConfiguration)? = nil
+  )
+
+  /// Create a derived context that shares state (detached nodes, diagnostics)
+  /// with an existing context but has a different lexical context.
+  public init(sharingWith context: BasicMacroExpansionContext, lexicalContext: [Syntax])
+}
+```
+
+`BasicMacroExpansionContext` also satisfies the `MacroExpansionContext` protocol requirements:
+
+```swift
+// MacroExpansionContext conformance
+func makeUniqueName(_ name: String) -> TokenSyntax
+func diagnose(_ diagnostic: Diagnostic)
+func location(
+  of node: some SyntaxProtocol,
+  at position: PositionInSyntaxNode,
+  filePathMode: SourceLocationFilePathMode
+) -> AbstractSourceLocation?
+var buildConfiguration: (any BuildConfiguration)?
+```
+
+### Checking diagnostics after expansion
+
+```swift
+// After calling expand(…), inspect context.diagnostics:
+for diag in context.diagnostics {
+  print("\(diag.diagMessage.severity): \(diag.message)")
+}
+```
+
+---
+
+## Relationship between the two libraries
+
+| | `SwiftSyntaxMacros` | `SwiftSyntaxMacroExpansion` |
+|---|---|---|
+| **Purpose** | Define macro behavior | Drive macro execution |
+| **Key types** | Protocol definitions (`ExpressionMacro`, `MemberMacro`, …) | `BasicMacroExpansionContext`, `expandFreestandingMacro`, `expand(macros:…)` |
+| **Used by** | Macro implementation targets | Test targets, tools, the compiler plugin runtime |
+| **Depends on** | SwiftSyntax, SwiftDiagnostics | SwiftSyntaxMacros + parser/operators |
+
+A compiler plugin target imports only `SwiftSyntaxMacros` and `SwiftCompilerPlugin`. A test target additionally imports `SwiftSyntaxMacroExpansion` (and usually `SwiftSyntaxMacrosTestSupport`) to expand macros in-process.

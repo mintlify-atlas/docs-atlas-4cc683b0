@@ -1,0 +1,141 @@
+---
+title: "SwiftOperators"
+description: "Operator and precedence group declarations, and sequence expression folding."
+---
+
+`SwiftOperators` provides a semantic model for Swift operators and their precedence relationships. Its primary use is folding flat `SequenceExprSyntax` nodes (as produced by the parser) into a properly structured binary expression tree.
+
+## Why folding is needed
+
+The Swift parser produces `SequenceExprSyntax` — a flat list of expressions and operators — rather than a nested binary tree, because correct folding requires knowledge of operator precedence that is defined in source (not built into the parser). `SwiftOperators` bridges that gap.
+
+```swift
+// Parser output (flat sequence):
+// SequenceExprSyntax: [1, +, 2, *, 3]
+//
+// After folding:
+// InfixOperatorExprSyntax: 1 + (2 * 3)
+```
+
+## OperatorTable
+
+`OperatorTable` is the central type. It stores operator and precedence group declarations and performs folding:
+
+```swift
+public struct OperatorTable: Sendable {
+    public init()
+
+    public init(
+        precedenceGroups: [PrecedenceGroup],
+        operators: [Operator],
+        errorHandler: OperatorErrorHandler = { throw $0 }
+    ) rethrows
+}
+```
+
+### Loading Swift standard operators
+
+Use `OperatorTable.standardOperators` to get a table pre-populated with all of Swift's built-in operators:
+
+```swift
+import SwiftOperators
+import SwiftParser
+
+let source = "let x = 1 + 2 * 3"
+let tree = Parser.parse(source: source)
+
+var opTable = OperatorTable.standardOperators
+let folded = try opTable.foldAll(tree)
+print(folded)
+```
+
+### Populating from source
+
+Parse operator declarations from your own source files and register them:
+
+```swift
+var opTable = OperatorTable.standardOperators
+let mySource = """
+precedencegroup MyPrecedence { higherThan: AdditionPrecedence }
+infix operator ⊕: MyPrecedence
+"""
+let declarations = Parser.parse(source: mySource)
+try opTable.addSourceFile(declarations)
+```
+
+### Key methods
+
+```swift
+// Fold all sequence expressions in a tree
+public func foldAll(
+    _ tree: some SyntaxProtocol,
+    errorHandler: OperatorErrorHandler = { throw $0 }
+) rethrows -> Syntax
+
+// Fold a single sequence expression
+public func fold(
+    _ sequence: SequenceExprSyntax,
+    errorHandler: OperatorErrorHandler = { throw $0 }
+) rethrows -> ExprSyntax
+
+// Register operator and precedence group declarations from a source file
+public mutating func addSourceFile(
+    _ sourceFile: SourceFileSyntax,
+    errorHandler: OperatorErrorHandler = { throw $0 }
+) rethrows
+```
+
+## Operator
+
+Represents a single operator declaration:
+
+```swift
+public struct Operator: Sendable {
+    public enum Kind: Sendable {
+        case infix
+        case prefix
+        case postfix
+    }
+    public var kind: Kind
+    public var name: OperatorName
+    public var precedenceGroup: PrecedenceGroupName?
+}
+```
+
+## PrecedenceGroup
+
+Represents a precedence group declaration with its associativity and relationships:
+
+```swift
+public struct PrecedenceGroup: Sendable {
+    public enum Associativity: Sendable {
+        case left
+        case right
+        case none
+    }
+    public var name: PrecedenceGroupName
+    public var associativity: Associativity
+    public var assignment: Bool
+    public var higherThan: [PrecedenceGroupName]
+    public var lowerThan: [PrecedenceGroupName]
+}
+```
+
+## OperatorErrorHandler
+
+```swift
+public typealias OperatorErrorHandler = (OperatorError) throws -> Void
+```
+
+Pass a custom handler to `OperatorTable` initializers and folding methods to collect errors instead of throwing on the first one.
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="SwiftSyntax" icon="code" href="/api/swift-syntax">
+    The SequenceExprSyntax and ExprSyntax types produced and consumed by folding
+  </Card>
+  <Card title="SwiftParser" icon="brackets-curly" href="/api/swift-parser">
+    Parses Swift source into the flat sequence expressions that SwiftOperators folds
+  </Card>
+</CardGroup>

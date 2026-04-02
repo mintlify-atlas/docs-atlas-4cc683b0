@@ -1,0 +1,143 @@
+---
+title: "SwiftIDEUtils"
+description: "Utilities for editor integrations: syntax classification, fix-it application, and name matching."
+---
+
+`SwiftIDEUtils` provides higher-level utilities built on top of `SwiftSyntax` and `SwiftDiagnostics` that are useful for implementing editor features such as syntax highlighting, fix-it application, and symbol renaming.
+
+## SyntaxClassification
+
+`SyntaxClassification` is an enum that categorises every token in a Swift source file for syntax highlighting:
+
+```swift
+public enum SyntaxClassification: Sendable {
+    case attribute         // @Attribute
+    case blockComment      // /* ... */
+    case docBlockComment   // /** ... */
+    case docLineComment    // ///
+    case dollarIdentifier  // $0
+    case editorPlaceholder // <#placeholder#>
+    case floatLiteral
+    case identifier
+    case ifConfigDirective // #if, #elseif, #else
+    case integerLiteral
+    case keyword
+    case lineComment       // //
+    case none              // no coloring
+    case `operator`
+    case regexLiteral
+    case stringLiteral
+    case type
+    case argumentLabel
+}
+```
+
+### Classifying tokens
+
+Use `SyntaxClassifier` to iterate over every token with its classification:
+
+```swift
+import SwiftIDEUtils
+import SwiftParser
+
+let source = """
+func greet(name: String) -> String {
+    return "Hello, \\(name)!"
+}
+"""
+
+let tree = Parser.parse(source: source)
+
+for token in tree.tokens(viewMode: .sourceAccurate) {
+    let classification = token.tokenClassification
+    print("\(token.text): \(classification.kind)")
+}
+```
+
+## FixItApplier
+
+`FixItApplier` applies fix-its from `SwiftDiagnostics` to a source tree and returns the modified source text.
+
+<Note>
+  `FixItApplier` is marked `@_spi(FixItApplier)`, so you must add `@_spi(FixItApplier) import SwiftIDEUtils` to use it.
+</Note>
+
+```swift
+@_spi(FixItApplier)
+public enum FixItApplier {
+    /// Apply fix-its from a set of diagnostics to a syntax tree.
+    public static func applyFixes(
+        from diagnostics: [Diagnostic],
+        filterByMessages messages: [String]?,
+        to tree: some SyntaxProtocol,
+        allowDuplicateInsertions: Bool = true
+    ) -> String
+}
+```
+
+| Parameter | Description |
+|---|---|
+| `diagnostics` | Array of diagnostics whose fix-its to apply |
+| `filterByMessages` | If provided, only apply fix-its with matching message strings; if `nil`, applies the first fix-it from each diagnostic |
+| `tree` | The syntax tree to transform |
+| `allowDuplicateInsertions` | Whether to allow the same insertion to be applied more than once |
+
+### Example
+
+```swift
+import SwiftParser
+import SwiftParserDiagnostics
+@_spi(FixItApplier) import SwiftIDEUtils
+
+let source = "let x: Int = \"hello\""
+let tree = Parser.parse(source: source)
+let diags = ParseDiagnosticsGenerator.diagnostics(for: tree)
+
+let fixed = FixItApplier.applyFixes(
+    from: diags,
+    filterByMessages: nil,
+    to: tree
+)
+print(fixed)
+```
+
+## DeclNameLocation
+
+`DeclNameLocation` represents the source location of a declaration name, including its argument labels. Useful for implementing rename refactoring:
+
+```swift
+import SwiftIDEUtils
+
+// Use NameMatcher to find all references to a declaration name in a tree
+```
+
+## NameMatcher
+
+`NameMatcher` locates all references to a given declaration name in a syntax tree. It handles base names plus argument labels and distinguishes call sites from declaration sites:
+
+```swift
+import SwiftIDEUtils
+import SwiftParser
+
+let source = """
+func foo(bar: Int) {}
+foo(bar: 42)
+"""
+
+let tree = Parser.parse(source: source)
+let matches = NameMatcher.matches(
+    for: DeclNameLocation.Name(baseName: "foo"),
+    in: tree
+)
+```
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="SwiftDiagnostics" icon="triangle-exclamation" href="/api/swift-diagnostics">
+    Diagnostic and fix-it types consumed by FixItApplier
+  </Card>
+  <Card title="Traversing syntax trees" icon="sitemap" href="/guides/traversing-syntax-trees">
+    Walking syntax trees to find tokens and nodes
+  </Card>
+</CardGroup>

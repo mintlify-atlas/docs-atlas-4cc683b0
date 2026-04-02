@@ -1,0 +1,231 @@
+---
+title: "Building syntax"
+description: "Construct Swift syntax trees programmatically using SwiftSyntaxBuilder's result-builder DSL."
+---
+
+`SwiftSyntaxBuilder` extends `SwiftSyntax` with two complementary approaches to constructing syntax nodes: a string-interpolation API that parses embedded source code, and a result-builder DSL that lets you compose typed nodes in Swift.
+
+## String interpolation
+
+Any type that conforms to `SyntaxExpressibleByStringInterpolation` can be initialized from a string literal. The string is parsed at runtime and the resulting node is type-checked against the expected syntax kind.
+
+```swift
+import SwiftSyntax
+import SwiftSyntaxBuilder
+
+// A single expression
+let expr: ExprSyntax = "1 + 2"
+
+// A full declaration — the string is reparsed as Swift source
+let decl: DeclSyntax = "var x: Int = 0"
+```
+
+### Interpolating existing nodes
+
+You can splice an already-built syntax node directly into the string using `\(node)`:
+
+```swift
+let typeName: TypeSyntax = "Int"
+let decl: DeclSyntax = "var count: \(typeName) = 0"
+```
+
+### Interpolating raw text
+
+Use `\(raw:)` to interpolate a plain `String` without any parsing — the text is inserted verbatim:
+
+```swift
+let propertyName = "firstName"
+let propertyType = "String"
+let decl: DeclSyntax = "var \(raw: propertyName): \(raw: propertyType)"
+```
+
+### Interpolating Swift values as literals
+
+Use `\(literal:)` to embed a Swift value as the source-code literal that represents it. Strings are automatically quoted and escaped; numbers, Booleans, arrays, and dictionaries are supported:
+
+```swift
+let greeting = "Hello, world!"
+let expr: ExprSyntax = "print(\(literal: greeting))"
+// produces: print("Hello, world!")
+
+let numbers = [1, 2, 3]
+let arrayExpr: ExprSyntax = "\(literal: numbers)"
+// produces: [1, 2, 3]
+```
+
+---
+
+## Result-builder DSL
+
+SwiftSyntaxBuilder provides `@resultBuilder` types for every list node in the Swift grammar — `CodeBlockItemListBuilder`, `MemberBlockItemListBuilder`, `FunctionParameterListBuilder`, and many more. You use these builders inside the trailing-closure initializers on compound syntax nodes.
+
+### Building a complete source file
+
+The example below is adapted from `Examples/Sources/CodeGenerationUsingSwiftSyntaxBuilder`. It generates a `struct` with stored properties and `with…` mutating helpers:
+
+```swift
+import SwiftSyntax
+import SwiftSyntaxBuilder
+
+// Helper: capitalize the first letter of a property name for the `with` method
+extension String {
+    func withFirstLetterUppercased() -> String {
+        guard let first = self.first else { return self }
+        return first.uppercased() + self.dropFirst()
+    }
+}
+
+let properties = [
+    "firstName": "String",
+    "lastName":  "String",
+    "age":       "Int",
+]
+
+let source = SourceFileSyntax {
+    StructDeclSyntax(name: "Person") {
+        for (propertyName, propertyType) in properties {
+            // Simple stored property via string interpolation
+            DeclSyntax("var \(raw: propertyName): \(raw: propertyType)")
+
+            // Mutating helper function
+            DeclSyntax(
+                """
+                func with\(raw: propertyName.withFirstLetterUppercased())(_ \(raw: propertyName): \(raw: propertyType)) -> Person {
+                    var result = self
+                    result.\(raw: propertyName) = \(raw: propertyName)
+                    return result
+                }
+                """
+            )
+        }
+    }
+}
+
+print(source.formatted().description)
+```
+
+The builder automatically handles commas, newlines, and whitespace so that the generated output is syntactically valid.
+
+### Building a function declaration with typed initializers
+
+For precise control over every token, use the typed `FunctionDeclSyntax` initializer directly. Parameters accept typed node arguments:
+
+```swift
+import SwiftSyntax
+import SwiftSyntaxBuilder
+
+let funcDecl = FunctionDeclSyntax(
+    name: .identifier("greet"),
+    signature: FunctionSignatureSyntax(
+        parameterClause: FunctionParameterClauseSyntax {
+            FunctionParameterSyntax(
+                firstName: .identifier("name"),
+                type: TypeSyntax("String")
+            )
+        },
+        returnClause: ReturnClauseSyntax(type: TypeSyntax("String"))
+    )
+) {
+    // Body built with CodeBlockItemListBuilder
+    ReturnStmtSyntax(
+        expression: ExprSyntax("\"Hello, \" + name")
+    )
+}
+
+print(funcDecl.formatted().description)
+// func greet(name: String) -> String {
+//     return "Hello, " + name
+// }
+```
+
+---
+
+## Direct node initializers
+
+Every syntax node type exposes a memberwise initializer. All optional children default to `nil`, and token children have factory methods such as `.identifier(_:)`, `.keyword(.func)`, and `.leftParenToken()`.
+
+```swift
+// Build a type annotation: ": Int"
+let annotation = TypeAnnotationSyntax(
+    type: IdentifierTypeSyntax(name: .identifier("Int"))
+)
+
+// Build a variable declaration: "let answer: Int = 42"
+let varDecl = VariableDeclSyntax(
+    bindingSpecifier: .keyword(.let)
+) {
+    PatternBindingSyntax(
+        pattern: IdentifierPatternSyntax(identifier: .identifier("answer")),
+        typeAnnotation: TypeAnnotationSyntax(
+            type: TypeSyntax("Int")
+        ),
+        initializer: InitializerClauseSyntax(
+            value: ExprSyntax("42")
+        )
+    )
+}
+```
+
+---
+
+## Adding trivia
+
+Trivia (whitespace and comments) lives on tokens, not on structural nodes. Every token exposes `leadingTrivia` and `trailingTrivia` properties you can set with `with(_:_:)`:
+
+```swift
+// Add a blank line before a declaration
+let withBlankLine = funcDecl.with(
+    \.leadingTrivia,
+    .newlines(2)
+)
+
+// Add an end-of-line comment after a token
+let tokenWithComment = token.with(
+    \.trailingTrivia,
+    .spaces(1) + .lineComment("// generated")
+)
+```
+
+---
+
+## Formatting and serializing
+
+Call `.formatted()` on any syntax node to apply the default `BasicFormat` indentation pass. Call `.description` to get the source-code string:
+
+```swift
+let code: String = source.formatted().description
+```
+
+<Note>
+`.formatted()` uses `BasicFormat`, which applies standard Swift indentation. If you need custom formatting rules, pass your own `BasicFormat` subclass to `formatted(using:)`.
+</Note>
+
+---
+
+## Common patterns
+
+<Accordion title="Building a struct with members">
+Use `StructDeclSyntax(name:) { ... }` with a `MemberBlockItemListBuilder` closure. Each expression in the closure can be a `DeclSyntax` (produced via string interpolation), a typed declaration node, or any `DeclSyntaxProtocol` conformer.
+</Accordion>
+
+<Accordion title="Building a protocol extension">
+Combine `ExtensionDeclSyntax` with `MemberBlockItemListBuilder`:
+
+```swift
+let ext = ExtensionDeclSyntax(
+    extendedType: TypeSyntax("MyProtocol")
+) {
+    FunctionDeclSyntax(name: .identifier("defaultImpl")) {
+        // body items
+    }
+}
+```
+</Accordion>
+
+<Accordion title="Modifying an existing node with with(_:_:)">
+All syntax nodes are value types. Use `with(_:_:)` to produce a modified copy via a key path:
+
+```swift
+let renamed = funcDecl.with(\.name, .identifier("newName"))
+```
+</Accordion>

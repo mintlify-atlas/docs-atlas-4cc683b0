@@ -1,0 +1,487 @@
+---
+title: "SwiftSyntax"
+description: "The core syntax tree library: typed nodes, protocols, visitors, and rewriters."
+---
+
+## Overview
+
+`SwiftSyntax` represents Swift source code as an immutable, fully-fidelity syntax tree. Every node in the tree conforms to `SyntaxProtocol`, and the tree round-trips byte-for-byte with the original source (including whitespace and comments via _trivia_).
+
+```swift
+import SwiftSyntax
+import SwiftParser
+
+let source = "func greet(name: String) { print(name) }"
+let tree = Parser.parse(source: source)
+
+tree.walk(MyVisitor(viewMode: .sourceAccurate))
+```
+
+---
+
+## SyntaxProtocol
+
+`SyntaxProtocol` is the root protocol for every syntax node. Do not conform to it directly.
+
+```swift
+public protocol SyntaxProtocol: CustomStringConvertible,
+  CustomDebugStringConvertible, TextOutputStreamable,
+  CustomReflectable, Sendable
+```
+
+### Tree Navigation
+
+<ParamField path="parent" type="Syntax?">
+  The parent node, or `nil` if this node is the root.
+</ParamField>
+
+<ParamField path="root" type="Syntax">
+  The root of the tree in which this node resides.
+</ParamField>
+
+<ParamField path="hasParent" type="Bool">
+  `true` when the node has a parent.
+</ParamField>
+
+<ParamField path="kind" type="SyntaxKind">
+  The kind of syntax node (e.g. `.functionDecl`). Prefer `as(FunctionDeclSyntax.self)` when you also need the typed node.
+</ParamField>
+
+<ParamField path="syntaxNodeType" type="SyntaxProtocol.Type">
+  The dynamic concrete type of this node. More accurate than `type(of: self)` for base-type variables.
+</ParamField>
+
+```swift
+func children(viewMode: SyntaxTreeViewMode) -> SyntaxChildren
+```
+
+Returns the child nodes filtered by the given view mode (`.sourceAccurate` or `.all`).
+
+```swift
+func tokens(viewMode: SyntaxTreeViewMode) -> TokenSequence
+func firstToken(viewMode: SyntaxTreeViewMode) -> TokenSyntax?
+func lastToken(viewMode: SyntaxTreeViewMode) -> TokenSyntax?
+func previousToken(viewMode: SyntaxTreeViewMode) -> TokenSyntax?
+func nextToken(viewMode: SyntaxTreeViewMode) -> TokenSyntax?
+func token(at position: AbsolutePosition) -> TokenSyntax?
+```
+
+### Position and Range
+
+<ParamField path="position" type="AbsolutePosition">
+  Start of the node including leading trivia.
+</ParamField>
+
+<ParamField path="positionAfterSkippingLeadingTrivia" type="AbsolutePosition">
+  Start of the node's content, skipping leading trivia.
+</ParamField>
+
+<ParamField path="endPosition" type="AbsolutePosition">
+  End of the node including trailing trivia.
+</ParamField>
+
+<ParamField path="endPositionBeforeTrailingTrivia" type="AbsolutePosition">
+  End of the node's content, before trailing trivia.
+</ParamField>
+
+<ParamField path="range" type="Range<AbsolutePosition>">
+  `position..<endPosition` — full byte range including trivia.
+</ParamField>
+
+<ParamField path="trimmedRange" type="Range<AbsolutePosition>">
+  `positionAfterSkippingLeadingTrivia..<endPositionBeforeTrailingTrivia` — content only.
+</ParamField>
+
+<ParamField path="totalLength" type="SourceLength">
+  Total byte length including trivia.
+</ParamField>
+
+<ParamField path="trimmedLength" type="SourceLength">
+  Byte length excluding leading/trailing trivia of the first/last tokens.
+</ParamField>
+
+### Trivia
+
+<ParamField path="leadingTrivia" type="Trivia">
+  The leading trivia of the first token in this subtree. Settable.
+</ParamField>
+
+<ParamField path="trailingTrivia" type="Trivia">
+  The trailing trivia of the last token in this subtree. Settable.
+</ParamField>
+
+### Description
+
+<ParamField path="description" type="String">
+  Source-accurate text of this node (may not represent invalid UTF-8; use `syntaxTextBytes` in that case).
+</ParamField>
+
+<ParamField path="trimmedDescription" type="String">
+  Description with leading/trailing whitespace removed.
+</ParamField>
+
+<ParamField path="debugDescription" type="String">
+  Tree-structured dump of the node and its children.
+</ParamField>
+
+```swift
+func debugDescription(
+    includeTrivia: Bool = false,
+    converter: SourceLocationConverter? = nil,
+    mark: SyntaxProtocol? = nil,
+    indentString: String = ""
+) -> String
+```
+
+### Error Flags
+
+<ParamField path="hasError" type="Bool">
+  `true` if the subtree contains missing nodes, unexpected nodes, or tokens with error-level diagnostics.
+</ParamField>
+
+<ParamField path="hasWarning" type="Bool">
+  `true` if the subtree contains tokens with warning-level diagnostics.
+</ParamField>
+
+### Casting
+
+```swift
+// Check without casting
+func `is`<S: SyntaxProtocol>(_ syntaxType: S.Type) -> Bool
+
+// Try to cast — returns nil on failure
+func `as`<S: SyntaxProtocol>(_ syntaxType: S.Type) -> S?
+
+// Force cast — crashes if the cast fails
+func cast<S: SyntaxProtocol>(_ syntaxType: S.Type) -> S
+```
+
+```swift
+let decl: DeclSyntax = ...
+if let fn = decl.as(FunctionDeclSyntax.self) {
+    print(fn.name.text)
+}
+```
+
+### Modifying
+
+```swift
+// Return a copy with one child replaced
+func with<T>(_ keyPath: WritableKeyPath<Self, T>, _ value: T) -> Self
+
+// Return this subtree detached from its parent
+var detached: Self
+```
+
+---
+
+## Syntax
+
+`Syntax` is the type-erased base node. Every typed node can be upcast to `Syntax` via `Syntax(node)`.
+
+```swift
+public struct Syntax: SyntaxProtocol, SyntaxHashable
+```
+
+```swift
+public var root: Syntax        // root of the tree
+public var parent: Syntax?     // parent node, nil at the root
+public var hasParent: Bool
+public var id: SyntaxIdentifier
+```
+
+Use `Syntax.init` to upcast and `as(_:)` / `cast(_:)` to downcast:
+
+```swift
+let base = Syntax(functionDecl)              // upcast
+let fn   = base.as(FunctionDeclSyntax.self)  // downcast → optional
+```
+
+---
+
+## SyntaxVisitor
+
+`SyntaxVisitor` walks the tree and calls typed visit hooks. Subclass it and override the `visit` / `visitPost` pair for each node type you care about.
+
+```swift
+open class SyntaxVisitor {
+    public let viewMode: SyntaxTreeViewMode
+    public init(viewMode: SyntaxTreeViewMode)
+
+    /// Start walking the tree rooted at `node`.
+    public func walk(_ node: some SyntaxProtocol)
+
+    // Override points — one pair per node type:
+    open func visit(_ node: FunctionDeclSyntax) -> SyntaxVisitorContinueKind
+    open func visitPost(_ node: FunctionDeclSyntax)
+
+    // … hundreds of additional pairs, one per SyntaxKind …
+}
+```
+
+<ParamField path="viewMode" type="SyntaxTreeViewMode">
+  Controls which nodes are visited. `.sourceAccurate` skips missing/implicit nodes; `.all` visits every node in the layout.
+</ParamField>
+
+`visit(_:)` returns `SyntaxVisitorContinueKind`:
+
+| Value | Meaning |
+|---|---|
+| `.visitChildren` | Continue into this node's children (default). |
+| `.skipChildren` | Skip all descendants of this node. |
+
+```swift
+class FunctionPrinter: SyntaxVisitor {
+    override func visit(_ node: FunctionDeclSyntax) -> SyntaxVisitorContinueKind {
+        print("Found function:", node.name.text)
+        return .visitChildren
+    }
+}
+
+let printer = FunctionPrinter(viewMode: .sourceAccurate)
+printer.walk(tree)
+```
+
+---
+
+## SyntaxAnyVisitor
+
+`SyntaxAnyVisitor` is a subclass of `SyntaxVisitor` that routes every node through a single `visitAny` override. Use it when the same logic applies to all node types.
+
+```swift
+open class SyntaxAnyVisitor: SyntaxVisitor {
+    open func visitAny(_ node: Syntax) -> SyntaxVisitorContinueKind
+    open func visitAnyPost(_ node: Syntax)
+}
+```
+
+```swift
+class Counter: SyntaxAnyVisitor {
+    var count = 0
+    override func visitAny(_ node: Syntax) -> SyntaxVisitorContinueKind {
+        count += 1
+        return .visitChildren
+    }
+}
+```
+
+> `SyntaxAnyVisitor` is slower than `SyntaxVisitor` due to the extra dispatch. Prefer `SyntaxVisitor` when you only need a small set of node types.
+
+---
+
+## SyntaxRewriter
+
+`SyntaxRewriter` walks the tree and rebuilds it with modifications. Override `visit(_:)` for each node type you want to transform; return a modified copy or the original node unchanged.
+
+```swift
+open class SyntaxRewriter {
+    public let viewMode: SyntaxTreeViewMode
+    public init(viewMode: SyntaxTreeViewMode = .sourceAccurate)
+
+    /// Rewrite the tree rooted at `node`.
+    public func rewrite(_ node: some SyntaxProtocol, detach: Bool = false) -> Syntax
+
+    // Pre/post hooks called for every node:
+    open func visitPre(_ node: Syntax)
+    open func visitPost(_ node: Syntax)
+
+    // Override to intercept any node before type-specific dispatch:
+    open func visitAny(_ node: Syntax) -> Syntax?   // return nil to use type-specific visit
+
+    // Per-type override points — return the (possibly modified) node:
+    open func visit(_ token: TokenSyntax) -> TokenSyntax
+    open func visit(_ node: FunctionDeclSyntax) -> FunctionDeclSyntax
+    // … one method per SyntaxKind …
+}
+```
+
+```swift
+class AsyncAdder: SyntaxRewriter {
+    override func visit(_ node: FunctionDeclSyntax) -> FunctionDeclSyntax {
+        // Add `async` effect specifier to every function
+        var copy = node
+        copy.signature.effectSpecifiers = FunctionEffectSpecifiersSyntax(asyncSpecifier: .keyword(.async))
+        return copy
+    }
+}
+
+let rewriter = AsyncAdder()
+let newTree = rewriter.rewrite(tree)
+```
+
+---
+
+## SyntaxCollection
+
+`SyntaxCollection` is a protocol that all list-like syntax nodes conform to (e.g. `CodeBlockItemListSyntax`, `FunctionParameterListSyntax`).
+
+```swift
+public protocol SyntaxCollection: SyntaxProtocol, BidirectionalCollection,
+    ExpressibleByArrayLiteral
+where Element: SyntaxProtocol, Index == SyntaxChildrenIndex
+```
+
+Collections support standard `BidirectionalCollection` operations and array literal initialization:
+
+```swift
+let params: FunctionParameterListSyntax = [
+    FunctionParameterSyntax(firstName: .identifier("name"), type: TypeSyntax("String")),
+    FunctionParameterSyntax(firstName: .identifier("age"),  type: TypeSyntax("Int")),
+]
+
+for param in params {
+    print(param.firstName?.text ?? "_")
+}
+```
+
+```swift
+// Initialize from a sequence of elements
+public init<Children: Sequence>(_ children: Children) where Children.Element == Element
+
+// Express as an array literal
+public init(arrayLiteral elements: Element...)
+
+// Count includes both present and missing nodes
+public var count: Int
+```
+
+---
+
+## SyntaxChildren
+
+`SyntaxChildren` is the `BidirectionalCollection` returned by `children(viewMode:)`. Elements are type-erased `Syntax` nodes.
+
+```swift
+public struct SyntaxChildren: BidirectionalCollection, Sendable {
+    public typealias Index   = SyntaxChildrenIndex
+    public typealias Element = Syntax
+}
+```
+
+```swift
+for child in node.children(viewMode: .sourceAccurate) {
+    print(child.kind, child.description)
+}
+```
+
+---
+
+## TokenSyntax
+
+`TokenSyntax` represents a single leaf token in the syntax tree. All source text lives in tokens.
+
+```swift
+public struct TokenSyntax: SyntaxProtocol, SyntaxHashable
+```
+
+### Initializer
+
+```swift
+public init(
+    _ kind: TokenKind,
+    leadingTrivia: Trivia = [],
+    trailingTrivia: Trivia = [],
+    presence: SourcePresence
+)
+```
+
+### Key Properties
+
+<ParamField path="tokenKind" type="TokenKind">
+  The syntactic kind of this token (e.g. `.identifier("foo")`, `.keyword(.func)`, `.leftBrace`). Settable.
+</ParamField>
+
+<ParamField path="text" type="String">
+  The token's source text without trivia. Derived from `tokenKind`.
+</ParamField>
+
+<ParamField path="leadingTrivia" type="Trivia">
+  Whitespace, newlines, and comments appearing before this token. Settable.
+</ParamField>
+
+<ParamField path="trailingTrivia" type="Trivia">
+  Whitespace and comments appearing after this token. Settable.
+</ParamField>
+
+<ParamField path="presence" type="SourcePresence">
+  `.present` for tokens that exist in source; `.missing` for parser-synthesized tokens representing absent syntax.
+</ParamField>
+
+```swift
+let tok = tree.firstToken(viewMode: .sourceAccurate)!
+print(tok.tokenKind)       // e.g. keyword(.func)
+print(tok.text)            // "func"
+print(tok.leadingTrivia)   // e.g. "\n"
+```
+
+---
+
+## Trivia and TriviaPiece
+
+Trivia represents the non-semantic text (whitespace, comments) attached to tokens.
+
+### Trivia
+
+```swift
+public struct Trivia: Sendable, Collection, Equatable,
+    ExpressibleByArrayLiteral
+```
+
+```swift
+// Construct from pieces
+public init(pieces: some Sequence<TriviaPiece>)
+public init(arrayLiteral elements: TriviaPiece...)
+
+// Common static constructors (via ExpressibleByArrayLiteral / factory)
+let trivia: Trivia = [.spaces(4)]
+let trivia: Trivia = [.newlines(1), .spaces(2)]
+
+// Properties
+public let pieces: [TriviaPiece]
+public var isEmpty: Bool
+public var sourceLength: SourceLength
+
+// Concatenation
+public func appending(_ piece: TriviaPiece) -> Trivia
+public func appending(_ trivia: Trivia) -> Trivia
+public static func + (lhs: Trivia, rhs: Trivia) -> Trivia
+```
+
+### TriviaPiece
+
+`TriviaPiece` is an enum whose cases cover every kind of trivia:
+
+```swift
+public enum TriviaPiece {
+    case spaces(Int)                // regular spaces
+    case tabs(Int)                  // tab characters
+    case verticalTabs(Int)
+    case formfeeds(Int)
+    case newlines(Int)              // \n
+    case carriageReturns(Int)       // \r
+    case carriageReturnLineFeeds(Int) // \r\n
+    case backslashes(Int)
+    case pounds(Int)
+    case lineComment(String)        // // …
+    case blockComment(String)       // /* … */
+    case docLineComment(String)     // /// …
+    case docBlockComment(String)    // /** … */
+    case unexpectedText(String)
+}
+```
+
+```swift
+// Inspect trivia on a token
+for piece in token.leadingTrivia {
+    switch piece {
+    case .newlines(let n):  print("newlines:", n)
+    case .spaces(let n):    print("spaces:", n)
+    case .lineComment(let text): print("comment:", text)
+    default: break
+    }
+}
+
+// Build trivia
+let trivia: Trivia = [.newlines(1), .spaces(4)]
+let updated = token.with(\.leadingTrivia, trivia)
+```

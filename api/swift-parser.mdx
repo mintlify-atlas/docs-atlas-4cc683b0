@@ -1,0 +1,289 @@
+---
+title: "SwiftParser"
+description: "Pure-Swift recursive-descent parser that converts Swift source text into a SwiftSyntax tree."
+---
+
+## Overview
+
+`SwiftParser` implements a hand-written recursive-descent parser that produces a lossless `SwiftSyntax` tree. The resulting tree is _source-faithful_: every byte of the input appears somewhere in the tree (in tokens or trivia), and printing the tree reproduces the original source exactly.
+
+The parser never throws — it always returns a complete `SourceFileSyntax` tree. Syntax errors are represented as `missing` tokens and `UnexpectedNodesSyntax` nodes within the tree.
+
+```swift
+import SwiftParser
+import SwiftSyntax
+
+let source = """
+func greet(name: String) -> String {
+    "Hello, \\(name)!"
+}
+"""
+
+let tree: SourceFileSyntax = Parser.parse(source: source)
+print(tree.hasError) // false
+```
+
+---
+
+## Parser
+
+`Parser` is the entry-point struct. Clients almost never instantiate it directly — use the static `parse` methods instead.
+
+```swift
+public struct Parser
+```
+
+### Static Properties
+
+<ParamField path="defaultSwiftVersion" type="Parser.SwiftVersion">
+  The Swift version used when none is specified. Currently `.v6`.
+</ParamField>
+
+---
+
+## Parsing Functions
+
+### `parse(source: String)`
+
+Parse a Swift source file from a `String`.
+
+```swift
+public static func parse(source: String) -> SourceFileSyntax
+```
+
+This is the most common entry point.
+
+```swift
+let tree = Parser.parse(source: "let x = 42")
+```
+
+### `parse(source: UnsafeBufferPointer<UInt8>)`
+
+Parse from a raw UTF-8 buffer. Useful when the source is already in memory as bytes (e.g. after reading a file with `Data`).
+
+```swift
+public static func parse(
+    source: UnsafeBufferPointer<UInt8>,
+    maximumNestingLevel: Int? = nil,
+    swiftVersion: SwiftVersion? = nil
+) -> SourceFileSyntax
+```
+
+<ParamField path="source" type="UnsafeBufferPointer<UInt8>">
+  UTF-8 encoded source bytes. The buffer must remain valid for the duration of the call.
+</ParamField>
+
+<ParamField path="maximumNestingLevel" type="Int?" default="256 (release) / 20 (debug)">
+  Maximum nesting depth before the parser bails out. Prevents stack overflows on pathological input.
+</ParamField>
+
+<ParamField path="swiftVersion" type="Parser.SwiftVersion?" default="nil (uses defaultSwiftVersion)">
+  Treat the source as a particular Swift language version.
+</ParamField>
+
+### `parseIncrementally(source:parseTransition:) -> IncrementalParseResult`
+
+Parse with incremental re-use. On the first parse, pass `parseTransition: nil`. On subsequent parses after edits, provide an `IncrementalParseTransition` built from the previous `IncrementalParseResult`.
+
+```swift
+public static func parseIncrementally(
+    source: String,
+    parseTransition: IncrementalParseTransition?
+) -> IncrementalParseResult
+```
+
+<ParamField path="source" type="String">
+  The post-edit source text.
+</ParamField>
+
+<ParamField path="parseTransition" type="IncrementalParseTransition?">
+  Carry-over state from the previous parse, including the old tree and lookahead ranges. Pass `nil` for an initial parse.
+</ParamField>
+
+**Returns** an `IncrementalParseResult` containing the new tree and its lookahead ranges, needed for the next incremental parse.
+
+```swift
+// First parse
+let result1 = Parser.parseIncrementally(source: originalSource, parseTransition: nil)
+
+// After an edit, create a transition
+let edit = SourceEdit(range: editRange, replacement: newText)
+let transition = IncrementalParseTransition(
+    previousIncrementalParseResult: result1,
+    edits: ConcurrentEdits(edit)
+)
+
+// Second parse — reuses unchanged nodes
+let result2 = Parser.parseIncrementally(source: editedSource, parseTransition: transition)
+```
+
+Buffer-based overload:
+
+```swift
+public static func parseIncrementally(
+    source: UnsafeBufferPointer<UInt8>,
+    maximumNestingLevel: Int? = nil,
+    parseTransition: IncrementalParseTransition?
+) -> IncrementalParseResult
+```
+
+---
+
+## IncrementalParseResult
+
+The result of an incremental or initial parse. Keep this value to seed the next `IncrementalParseTransition`.
+
+```swift
+public struct IncrementalParseResult: Sendable {
+    /// The fully parsed syntax tree.
+    public let tree: SourceFileSyntax
+
+    /// Lookahead ranges for each node — describes how far the parser read
+    /// past a node's end when parsing it. Required to determine whether
+    /// a node is safe to re-use after edits.
+    public let lookaheadRanges: LookaheadRanges
+
+    public init(tree: SourceFileSyntax, lookaheadRanges: LookaheadRanges)
+}
+```
+
+<ParamField path="tree" type="SourceFileSyntax">
+  The fully constructed syntax tree for the parsed source.
+</ParamField>
+
+<ParamField path="lookaheadRanges" type="LookaheadRanges">
+  Per-node lookahead metadata. Pass to `IncrementalParseTransition` to allow node reuse on the next parse.
+</ParamField>
+
+---
+
+## IncrementalParseTransition
+
+Keeps track of the previous syntax tree and the source edits that have been applied since it was created. Pass to `parseIncrementally` so the parser can skip unchanged regions.
+
+```swift
+public final class IncrementalParseTransition
+```
+
+### Initializer
+
+```swift
+public init(
+    previousIncrementalParseResult: IncrementalParseResult,
+    edits: ConcurrentEdits,
+    reusedNodeCallback: ReusedNodeCallback? = nil
+)
+```
+
+<ParamField path="previousIncrementalParseResult" type="IncrementalParseResult">
+  The `IncrementalParseResult` from the immediately preceding parse.
+</ParamField>
+
+<ParamField path="edits" type="ConcurrentEdits">
+  All source edits that transformed the previous source into the new source.
+</ParamField>
+
+<ParamField path="reusedNodeCallback" type="ReusedNodeCallback?" default="nil">
+  Optional closure `(_ node: Syntax) -> Void` called each time the parser reuses a node from the previous tree. Useful for testing and instrumentation.
+</ParamField>
+
+---
+
+## ConcurrentEdits
+
+Represents a set of edits applied _simultaneously_ to the original source buffer. All offsets refer to positions in the pre-edit source. Edits must be non-overlapping and in ascending offset order.
+
+```swift
+public struct ConcurrentEdits: Sendable {
+    public let edits: [SourceEdit]
+
+    /// Initialize from a single edit.
+    public init(_ single: SourceEdit)
+
+    /// Initialize from edits already in concurrent form.
+    /// Throws if the edits are overlapping or out of order.
+    public init(concurrent: [SourceEdit]) throws
+
+    /// Convert sequential edits (each applied to the result of the previous)
+    /// into concurrent form automatically.
+    public init(fromSequential sequentialEdits: [SourceEdit])
+}
+```
+
+<ParamField path="edits" type="[SourceEdit]">
+  The validated, sorted, non-overlapping source edits.
+</ParamField>
+
+```swift
+// Single edit
+let edits = ConcurrentEdits(SourceEdit(range: r, replacement: "newText"))
+
+// Multiple edits that were applied one-after-another
+let edits = ConcurrentEdits(fromSequential: [edit1, edit2, edit3])
+```
+
+---
+
+## SourceEdit
+
+A textual replacement applied to a byte range of the original source.
+
+```swift
+public struct SourceEdit: Equatable, Sendable
+```
+
+```swift
+public init(range: Range<AbsolutePosition>, replacement: String)
+public init(range: Range<AbsolutePosition>, replacement: [UInt8])
+```
+
+<ParamField path="range" type="Range<AbsolutePosition>">
+  The byte range in the **original** source buffer that this edit replaces.
+</ParamField>
+
+<ParamField path="replacementBytes" type="[UInt8]">
+  The UTF-8 bytes that replace the bytes in `range`.
+</ParamField>
+
+<ParamField path="replacement" type="String">
+  Computed string view of `replacementBytes`.
+</ParamField>
+
+<ParamField path="replacementLength" type="SourceLength">
+  Length of the replacement in UTF-8 bytes.
+</ParamField>
+
+<ParamField path="replacementRange" type="Range<AbsolutePosition>">
+  The range the replacement occupies in the **post-edit** source.
+</ParamField>
+
+```swift
+let start  = AbsolutePosition(utf8Offset: 10)
+let end    = AbsolutePosition(utf8Offset: 15)
+let edit   = SourceEdit(range: start..<end, replacement: "hello")
+```
+
+---
+
+## Parser.SwiftVersion
+
+Controls which language version the parser uses when disambiguating version-gated syntax.
+
+```swift
+extension Parser {
+    public enum SwiftVersion: Comparable, Sendable {
+        case v4
+        case v5
+        case v6
+    }
+}
+```
+
+Pass via `Parser.parse(source:swiftVersion:)` or leave `nil` to use `Parser.defaultSwiftVersion` (`.v6`).
+
+```swift
+let tree = Parser.parse(
+    source: myBuffer,
+    swiftVersion: .v5
+)
+```

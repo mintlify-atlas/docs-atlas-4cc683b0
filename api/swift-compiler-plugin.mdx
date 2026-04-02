@@ -1,0 +1,106 @@
+---
+title: "SwiftCompilerPlugin"
+description: "Wire macro implementations into the Swift compiler using the CompilerPlugin protocol."
+---
+
+`SwiftCompilerPlugin` provides the `CompilerPlugin` protocol and the `@main` entry-point wiring needed to bundle macro implementations into an executable that the Swift compiler invokes during compilation.
+
+## Overview
+
+When the Swift compiler encounters a macro use in source code, it launches your plugin executable, sends it a request over stdin/stdout, and expects an expanded syntax tree in response. `SwiftCompilerPlugin` handles all of that plumbing — you only need to declare which macro types your plugin provides.
+
+<Note>
+  Import `SwiftCompilerPlugin` only in your macro plugin executable target (the one declared as `.macro` or `.executableTarget` in `Package.swift`). Do not import it in the library target that defines your macro interfaces.
+</Note>
+
+## CompilerPlugin protocol
+
+```swift
+public protocol CompilerPlugin {
+    init()
+    var providingMacros: [Macro.Type] { get }
+}
+```
+
+Conform your plugin entry point to `CompilerPlugin` and list every macro type the plugin exposes in `providingMacros`.
+
+### Static `main()` entry point
+
+`CompilerPlugin` provides a default `static func main() throws` implementation that sets up the stdin/stdout communication channel with the compiler and runs the message loop. Annotate your conforming type with `@main` to make it the executable entry point.
+
+## Minimal plugin example
+
+```swift
+import SwiftCompilerPlugin
+import SwiftSyntaxMacros
+
+// Your macro implementations live in a separate library target.
+// Import that library here alongside SwiftCompilerPlugin.
+
+@main
+struct MyMacroPlugin: CompilerPlugin {
+    var providingMacros: [Macro.Type] = [
+        StringifyMacro.self,
+        URLMacro.self,
+    ]
+}
+```
+
+## Package.swift setup
+
+A typical macro package has three targets:
+
+```swift
+// Package.swift
+targets: [
+    // 1. The macro interface — declares @Stringify, #URL, etc.
+    .target(name: "MyMacros"),
+
+    // 2. The macro implementation library
+    .macro(
+        name: "MyMacrosImpl",
+        dependencies: [
+            .product(name: "SwiftSyntaxMacros", package: "swift-syntax"),
+            .product(name: "SwiftCompilerPlugin", package: "swift-syntax"),
+        ]
+    ),
+
+    // 3. Your app or library that uses the macros
+    .target(
+        name: "MyApp",
+        dependencies: ["MyMacros"]
+    ),
+]
+```
+
+<Tip>
+  The `.macro` target type (available in Swift 5.9+) is equivalent to an `.executableTarget` but signals to the compiler that this executable is a macro plugin.
+</Tip>
+
+## How it works
+
+<Steps>
+  <Step title="Compiler invokes the plugin">
+    When the compiler encounters a macro expansion it cannot handle inline, it launches your plugin executable as a subprocess.
+  </Step>
+  <Step title="Request arrives on stdin">
+    The compiler sends a length-prefixed, JSON-encoded message describing the macro call and its arguments as a `SwiftSyntax` node.
+  </Step>
+  <Step title="Plugin expands the macro">
+    `main()` dispatches to the correct `Macro.Type` in `providingMacros`, calling its `expansion(of:in:)` method with a `MacroExpansionContext`.
+  </Step>
+  <Step title="Result returned on stdout">
+    The expanded `SwiftSyntax` tree is serialized and sent back. The compiler splices it into the source file.
+  </Step>
+</Steps>
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="SwiftSyntaxMacros" icon="wand-magic-sparkles" href="/api/swift-syntax-macros">
+    The macro protocol hierarchy your implementations conform to
+  </Card>
+  <Card title="Writing Swift Macros" icon="book" href="/guides/writing-macros">
+    Step-by-step guide to authoring freestanding and attached macros
+  </Card>
+</CardGroup>

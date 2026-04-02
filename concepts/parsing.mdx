@@ -1,0 +1,183 @@
+---
+title: "Parsing"
+description: "How SwiftParser converts Swift source text into a syntax tree without requiring a compiler toolchain."
+---
+
+`SwiftParser` is a pure-Swift, recursive-descent parser that converts Swift source text into a `SwiftSyntax` tree. It has no dependency on the Swift compiler toolchain and can run anywhere Swift runs.
+
+<Note>
+The parser is a **concrete syntax tree** parser: every byte of the input — including whitespace, comments, and invalid UTF-8 sequences — appears somewhere in the output tree. Nothing is discarded.
+</Note>
+
+## Main entry points
+
+### Parsing a source file from a string
+
+The simplest way to parse Swift source is `Parser.parse(source:)`:
+
+```swift
+import SwiftParser
+import SwiftSyntax
+
+let source = """
+func greet(name: String) -> String {
+    return "Hello, \\(name)!"
+}
+"""
+
+let tree: SourceFileSyntax = Parser.parse(source: source)
+print(tree.statements.count)  // 1
+```
+
+The returned `SourceFileSyntax` is the root of the tree. It always contains a `statements` property of type `CodeBlockItemListSyntax`.
+
+### Parsing from a byte buffer
+
+When you already have the source as a contiguous buffer of UTF-8 bytes, use the `UnsafeBufferPointer<UInt8>` overload to avoid a copy:
+
+```swift
+import SwiftParser
+
+let bytes: [UInt8] = Array("let x = 42".utf8)
+let tree: SourceFileSyntax = bytes.withUnsafeBufferPointer { buffer in
+    Parser.parse(source: buffer)
+}
+```
+
+Full signature:
+
+```swift
+public static func parse(
+    source: UnsafeBufferPointer<UInt8>,
+    maximumNestingLevel: Int? = nil,
+    swiftVersion: SwiftVersion? = nil
+) -> SourceFileSyntax
+```
+
+The `maximumNestingLevel` parameter caps the depth the parser will descend before inserting a missing node. The default is `256` in release builds.
+
+### Parsing a specific syntax node kind
+
+Any type conforming to `SyntaxParseable` (which includes most layout nodes) exposes a `parse(from:)` static method. You can use this to parse a fragment of Swift rather than a complete source file:
+
+```swift
+import SwiftParser
+import SwiftSyntax
+
+var parser = Parser("(a: Int, b: String)")
+let params = FunctionParameterClauseSyntax.parse(from: &parser)
+print(params.parameters.count)  // 2
+```
+
+<Tip>
+Prefer `Parser.parse(source:)` for complete files. Use `SyntaxType.parse(from:)` only when you need to parse a known sub-grammar fragment.
+</Tip>
+
+## How the parser works
+
+### Recursive descent
+
+`SwiftParser` uses recursive descent parsing. Every grammar production is implemented as a mutating method on `Parser` that consumes tokens from an internal lexeme stream. Parsing functions call each other recursively to match the tree-shaped structure of the Swift grammar.
+
+Because parsing functions always yield the syntax node corresponding to the grammar production they implement, the structure of the parser closely mirrors the structure of the SwiftSyntax node types.
+
+### Token consumption
+
+The parser exposes two principal consumption modes:
+
+- **Unconditional** — `consumeAnyToken()` must match; an assertion fires in debug builds if it doesn't.
+- **Conditional** — `consume(if:)` returns `nil` and leaves the input unchanged when the next token doesn't match.
+
+### Lookahead
+
+The parser maintains a one-token lookahead via `peek()`. When more context is needed to disambiguate a parse (such as distinguishing a closure from a trailing expression), the parser creates a `Parser.Lookahead` instance that can scan ahead arbitrarily without consuming tokens from the main stream.
+
+## Error recovery
+
+The parser **always** produces a complete tree, even when the input is not valid Swift. This is a central design principle: every byte of the input ends up somewhere in the output tree.
+
+When the parser expects a token that is absent, it inserts a **missing token** — a `TokenSyntax` with `presence == .missing`. When it encounters tokens that do not fit the current grammar production, it wraps them in an `UnexpectedNodesSyntax` node and continues parsing.
+
+```swift
+import SwiftParser
+import SwiftSyntax
+
+// Missing function name
+let tree = Parser.parse(source: "func () {}")
+
+print(tree.hasError)   // true
+
+if let funcDecl = tree.statements.first?.item.as(FunctionDeclSyntax.self) {
+    print(funcDecl.name.presence)  // missing
+}
+```
+
+<Warning>
+`hasError` is a fast O(1) check backed by a recursive flag in the raw tree. It returns `true` when there are missing or unexpected nodes, or tokens with an error-level `TokenDiagnostic`. Always check `hasError` before treating a parsed tree as valid Swift.
+</Warning>
+
+The tree produced from invalid input is still structurally complete. Tools like formatters and editors can operate on it productively, which is one of the key motivations for the resilience design.
+
+## Collecting diagnostics after parsing
+
+The parser itself does not emit `Diagnostic` objects. Instead, the separate `ParseDiagnosticsGenerator` (from `SwiftParserDiagnostics`) walks the parsed tree and produces diagnostics from missing and unexpected nodes:
+
+```swift
+import SwiftParser
+import SwiftParserDiagnostics
+
+let source = "func greet( {}"   // missing closing paren and function name
+let tree = Parser.parse(source: source)
+
+let diagnostics = ParseDiagnosticsGenerator.diagnostics(for: tree)
+for diag in diagnostics {
+    print(diag.debugDescription)
+    // e.g. "1:13: expected ')' to end parameter clause"
+}
+```
+
+See [Diagnostics](/concepts/diagnostics) for the full diagnostic model.
+
+## Incremental parsing
+
+When a source file changes incrementally — for example, in an editor — you can avoid re-parsing unchanged regions using `parseIncrementally`:
+
+<Steps>
+  <Step title="Parse the initial file">
+    ```swift
+    import SwiftParser
+
+    let initial = Parser.parseIncrementally(
+        source: originalSource,
+        parseTransition: nil
+    )
+    // initial.tree       — the SourceFileSyntax
+    // initial.lookaheadRanges — needed to build the next transition
+    ```
+  </Step>
+  <Step title="Record the edit">
+    Represent the change as an `IncrementalParseTransition` built from the previous `IncrementalParseResult`.
+  </Step>
+  <Step title="Re-parse with the transition">
+    ```swift
+    let result = Parser.parseIncrementally(
+        source: editedSource,
+        parseTransition: transition
+    )
+    ```
+    The parser re-uses nodes from the old tree that were unaffected by the edit.
+  </Step>
+</Steps>
+
+## Relationship to `SwiftSyntax`
+
+`SwiftParser` is a separate module from `SwiftSyntax`. It depends on `SwiftSyntax` for its node types but `SwiftSyntax` does not depend on `SwiftParser`. You can use `SwiftSyntax` to inspect, transform, or print trees without including the parser.
+
+<CardGroup cols={2}>
+  <Card title="The syntax tree" href="/concepts/syntax-tree">
+    Understand the node types that the parser produces.
+  </Card>
+  <Card title="Diagnostics" href="/concepts/diagnostics">
+    Learn how to turn a parsed tree into human-readable error messages.
+  </Card>
+</CardGroup>

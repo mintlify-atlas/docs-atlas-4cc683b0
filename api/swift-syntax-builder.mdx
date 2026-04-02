@@ -1,0 +1,263 @@
+---
+title: "SwiftSyntaxBuilder"
+description: "Result-builder DSL for constructing Swift syntax trees programmatically."
+---
+
+## Overview
+
+`SwiftSyntaxBuilder` provides two complementary construction mechanisms:
+
+1. **String interpolation** — parse Swift source literals directly into typed syntax nodes.
+2. **Result builders** — compose syntax trees from typed sub-nodes using Swift's `@resultBuilder` DSL.
+
+```swift
+import SwiftSyntax
+import SwiftSyntaxBuilder
+
+// String interpolation
+let fn: FunctionDeclSyntax = "func greet(name: String) -> String { name }"
+
+// Result builder
+let list = CodeBlockItemListSyntax {
+    "let x = 1"
+    "let y = x + 1"
+    ReturnStmtSyntax(expression: ExprSyntax("y"))
+}
+```
+
+---
+
+## String Interpolation
+
+### SyntaxExpressibleByStringInterpolation
+
+Any syntax type that conforms to `SyntaxParseable` gains conformance to `SyntaxExpressibleByStringInterpolation` through `SwiftSyntaxBuilder`. This means you can initialize typed syntax nodes from string literals and string interpolations.
+
+```swift
+public protocol SyntaxExpressibleByStringInterpolation:
+    ExpressibleByStringInterpolation
+where Self.StringInterpolation == SyntaxStringInterpolation
+```
+
+Conforming types include all top-level syntax categories: `ExprSyntax`, `StmtSyntax`, `DeclSyntax`, `TypeSyntax`, `PatternSyntax`, and every concrete syntax node such as `FunctionDeclSyntax`, `StructDeclSyntax`, `IfExprSyntax`, etc.
+
+```swift
+// Literal initialization
+let expr: ExprSyntax = "1 + 2"
+let decl: DeclSyntax = "var answer = 42"
+let type: TypeSyntax = "[String: Int]"
+
+// Typed concrete node
+let fn: FunctionDeclSyntax = """
+func add(_ a: Int, _ b: Int) -> Int {
+    a + b
+}
+"""
+```
+
+> **Warning:** If the string literal does not parse to the expected node type, a fault is logged via OSLog on Darwin platforms. The node will still be returned but will contain error nodes (`hasError == true`).
+
+### Interpolating Syntax Nodes
+
+You can interpolate any `SyntaxProtocol` value directly into a string interpolation:
+
+```swift
+let paramName: TokenSyntax = "value"
+let fn: FunctionDeclSyntax = "func process(\(paramName): Int) {}"
+```
+
+Optional syntax nodes are also supported — a `nil` node interpolates as nothing.
+
+### `\(raw:)` — Raw String Interpolation
+
+Use `\(raw:)` to splice in an arbitrary value as raw source text without any quoting or escaping. Useful for identifiers, operator tokens, or other text that is not a `SyntaxProtocol` node.
+
+```swift
+public mutating func appendInterpolation<T>(raw value: T)
+```
+
+```swift
+let typeName = "MyStruct"
+let decl: StructDeclSyntax = "struct \(raw: typeName) {}"
+// Equivalent to: "struct MyStruct {}"
+```
+
+### `\(literal:)` — Value-to-Literal Interpolation
+
+`\(literal:)` converts a Swift value into the equivalent Swift literal expression syntax.
+
+```swift
+public mutating func appendInterpolation(
+    literal value: some ExpressibleByLiteralSyntax,
+    format: BasicFormat = BasicFormat()
+)
+```
+
+Types that conform to `ExpressibleByLiteralSyntax` include: `String`, `Substring`, `Int` (and all integer variants), `Float`, `Double`, `Bool`, `Array`, `Set`, `Dictionary`, `KeyValuePairs`, and `Optional` of any conforming type.
+
+```swift
+let greeting = "Hello, world!"
+let expr: ExprSyntax = "print(\(literal: greeting))"
+// → print("Hello, world!")
+
+let numbers = [1, 2, 3]
+let arrayExpr: ExprSyntax = "\(literal: numbers)"
+// → [1, 2, 3]
+```
+
+### Indentation-Aware Interpolation
+
+When you write leading whitespace (spaces or tabs) before an interpolated node on its own line, that indentation is automatically applied to every line of the interpolated node:
+
+```swift
+let body: CodeBlockSyntax = """
+{
+    \(someMultiLineExpr)
+}
+"""
+```
+
+---
+
+## Result Builders
+
+`SwiftSyntaxBuilder` vends `@resultBuilder` types for constructing syntax collection nodes. Each builder corresponds to a `SyntaxCollection` type and accepts the element types that collection holds.
+
+### Available Builders
+
+The following builders are defined in `ResultBuilderExtensions.swift`:
+
+| Builder | Produces | Accepts |
+|---|---|---|
+| `CodeBlockItemListBuilder` | `CodeBlockItemListSyntax` | `ExprSyntaxProtocol`, `StmtSyntaxProtocol`, `DeclSyntaxProtocol` |
+| `MemberBlockItemListBuilder` | `MemberBlockItemListSyntax` | `DeclSyntaxProtocol` |
+| `ConditionElementListBuilder` | `ConditionElementListSyntax` | `ExprSyntaxProtocol`, `AvailabilityConditionSyntax`, `MatchingPatternConditionSyntax`, `OptionalBindingConditionSyntax` |
+| `ExprListBuilder` | `ExprListSyntax` | `ExprSyntaxProtocol` |
+| `UnexpectedNodesBuilder` | `UnexpectedNodesSyntax` | `SyntaxProtocol` |
+
+Generated builders (from the `generated/` directory) cover all remaining collection types: `AccessorDeclListBuilder`, `ArrayElementListBuilder`, `AttributeListBuilder`, `AvailabilityArgumentListBuilder`, `CatchClauseListBuilder`, `ClosureParameterListBuilder`, `DictionaryElementListBuilder`, `EnumCaseElementListBuilder`, `FunctionParameterListBuilder`, `GenericParameterListBuilder`, `InheritedTypeListBuilder`, `LabeledExprListBuilder`, `PatternBindingListBuilder`, `SwitchCaseListBuilder`, `TupleTypeElementListBuilder`, and many more.
+
+### Using Result Builders
+
+Pass a trailing closure to any initializer or property annotated with a builder type:
+
+```swift
+// CodeBlockItemListBuilder — used for function bodies, if/else bodies, etc.
+let items = CodeBlockItemListSyntax {
+    "let x = 10"
+    "let y = 20"
+    "print(x + y)"
+}
+
+// MemberBlockItemListBuilder — used for struct/class/enum bodies
+let members = MemberBlockItemListSyntax {
+    "var name: String"
+    "var age: Int"
+    FunctionDeclSyntax("func greet() -> String { name }")
+}
+```
+
+Result builders support `if`, `if/else`, and `for` loops:
+
+```swift
+let includeDebug = true
+let items = CodeBlockItemListSyntax {
+    "let result = compute()"
+    if includeDebug {
+        "print(result)"
+    }
+    "return result"
+}
+```
+
+The `CodeBlockItemListBuilder` automatically inserts newlines between items that don't already have one.
+
+---
+
+## Convenience Initializers
+
+`SwiftSyntaxBuilder` adds convenience initializers to many syntax node types so you don't have to manually construct every child token.
+
+### Selected Convenience Initializers
+
+```swift
+// ArrayElementListSyntax — automatically adds trailing commas
+extension ArrayElementListSyntax {
+    public init(expressions: [ExprSyntax])
+}
+
+// ArrayExprSyntax
+extension ArrayExprSyntax {
+    public init(expressions: [ExprSyntax])
+}
+
+// BinaryOperatorExprSyntax
+extension BinaryOperatorExprSyntax {
+    public init(text: String)
+}
+
+// BooleanLiteralExprSyntax
+extension BooleanLiteralExprSyntax {
+    public init(_ value: Bool)
+}
+
+// AttributeSyntax — result-builder argument list, auto-parentheses
+extension AttributeSyntax {
+    public init(
+        _ attributeName: TypeSyntax,
+        @LabeledExprListBuilder argumentList: () -> LabeledExprListSyntax? = { nil }
+    )
+}
+```
+
+Many more convenience initializers exist for `FunctionCallExprSyntax`, `ClosureExprSyntax`, `StringLiteralExprSyntax`, `IntegerLiteralExprSyntax`, `TupleExprSyntax`, and others.
+
+---
+
+## Complete Example
+
+The following builds a `struct` with two stored properties and a computed property entirely using the `SwiftSyntaxBuilder` DSL:
+
+```swift
+import SwiftSyntax
+import SwiftSyntaxBuilder
+
+let structDecl = StructDeclSyntax(
+    name: "Point",
+    memberBlock: MemberBlockSyntax {
+        // Stored properties via string interpolation
+        "var x: Double"
+        "var y: Double"
+
+        // Computed property constructed from typed nodes
+        FunctionDeclSyntax(
+            name: .identifier("magnitude"),
+            signature: FunctionSignatureSyntax(
+                parameterClause: FunctionParameterClauseSyntax(parameters: []),
+                returnClause: ReturnClauseSyntax(type: TypeSyntax("Double"))
+            )
+        ) {
+            // Body via CodeBlockItemListBuilder
+            "(x * x + y * y).squareRoot()"
+        }
+    }
+)
+
+print(structDecl)
+// struct Point {
+//     var x: Double
+//     var y: Double
+//     func magnitude() -> Double {
+//         (x * x + y * y).squareRoot()
+//     }
+// }
+```
+
+You can also mix string interpolation with typed nodes inline:
+
+```swift
+let name = "velocity"
+let type = "Double"
+
+let property: VariableDeclSyntax = "var \(raw: name): \(raw: type)"
+```

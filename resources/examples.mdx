@@ -1,0 +1,261 @@
+---
+title: "Examples"
+description: "Real-world usage examples from the swift-syntax repository."
+---
+
+The `Examples/` directory in swift-syntax contains runnable projects that demonstrate three core use cases: rewriting syntax trees, generating source code, and implementing Swift macros. Each example can be run from within the `Examples/` folder:
+
+```bash
+swift run <ExampleName> <arguments>
+```
+
+<CardGroup cols={2}>
+  <Card title="AddOneToIntegerLiterals" icon="pencil" href="#addonetointeger-literals">
+    Rewrite every integer literal in a Swift source file using `SyntaxRewriter`.
+  </Card>
+  <Card title="CodeGenerationUsingSwiftSyntaxBuilder" icon="code" href="#code-generation-using-swiftsyntaxbuilder">
+    Generate a complete Swift struct with builder methods using `SwiftSyntaxBuilder`.
+  </Card>
+  <Card title="MacroExamples" icon="bolt" href="#macro-examples">
+    A collection of expression macros implemented with `SwiftSyntaxMacros`, packaged as a compiler plugin.
+  </Card>
+  <Card title="Real-world tools" icon="wrench" href="#real-world-tools">
+    Open-source projects built on swift-syntax: SwiftLint, swift-format, Periphery, and more.
+  </Card>
+</CardGroup>
+
+---
+
+## AddOneToIntegerLiterals
+
+<Accordion title="SyntaxRewriter: incrementing every integer literal in a file">
+
+This example shows the fundamental swift-syntax workflow: **parse → visit/rewrite → print**. It subclasses `SyntaxRewriter` and overrides `visit(_:TokenSyntax)` to intercept every integer literal token and return a replacement with the value incremented by one.
+
+```swift
+import SwiftParser
+import SwiftSyntax
+
+private class AddOneToIntegerLiterals: SyntaxRewriter {
+  override func visit(_ token: TokenSyntax) -> TokenSyntax {
+    // Only transform integer literals.
+    guard case .integerLiteral(let text) = token.tokenKind else {
+      return token
+    }
+
+    // Remove underscores from the original text (e.g. 3_000 → 3000).
+    let integerText = String(text.filter { ("0"..."9").contains($0) })
+    let int = Int(integerText)!
+
+    // Build a replacement token with the incremented value.
+    var newIntegerLiteralToken = token
+    newIntegerLiteralToken.tokenKind = .integerLiteral("\(int + 1)")
+    return newIntegerLiteralToken
+  }
+}
+
+@main
+struct Main {
+  static func main() throws {
+    let file = CommandLine.arguments[1]
+    let source = try String(contentsOf: URL(fileURLWithPath: file), encoding: .utf8)
+    // 1. Parse the source text into a syntax tree.
+    let sourceFile = Parser.parse(source: source)
+    // 2. Rewrite the tree.
+    let incremented = AddOneToIntegerLiterals().visit(sourceFile)
+    // 3. Print the rewritten source.
+    print(incremented)
+  }
+}
+```
+
+**Input:**
+```swift
+let x = 2
+let y = 3_000
+```
+
+**Output:**
+```swift
+let x = 3
+let y = 3001
+```
+
+Key points:
+- `Parser.parse(source:)` from `SwiftParser` turns a `String` into a `SourceFileSyntax`.
+- Subclassing `SyntaxRewriter` lets you override only the node kinds you care about; all other nodes pass through unchanged.
+- Modifying a `TokenSyntax` value (not a reference) produces a new node — the original tree is unmodified.
+
+**Run it:**
+```bash
+swift run AddOneToIntegerLiterals path/to/file.swift
+```
+
+</Accordion>
+
+---
+
+## Code generation using SwiftSyntaxBuilder
+
+<Accordion title="SwiftSyntaxBuilder: generating a struct with wither methods">
+
+`SwiftSyntaxBuilder` provides result-builder DSL syntax for constructing `SwiftSyntax` trees programmatically. This example generates a `Person` struct with stored properties and corresponding `withX(_:)` builder methods.
+
+```swift
+import SwiftSyntax
+import SwiftSyntaxBuilder
+
+let properties = [
+  "firstName": "String",
+  "lastName": "String",
+  "age": "Int",
+]
+
+let source = SourceFileSyntax {
+  StructDeclSyntax(name: "Person") {
+    for (propertyName, propertyType) in properties {
+      DeclSyntax("var \(raw: propertyName): \(raw: propertyType)")
+
+      DeclSyntax(
+        """
+        func with\(raw: propertyName.withFirstLetterUppercased())(_ \(raw: propertyName): \(raw: propertyType)) -> Person {
+          var result = self
+          result.\(raw: propertyName) = \(raw: propertyName)
+          return result
+        }
+        """
+      )
+    }
+  }
+}
+
+print(source.formatted().description)
+```
+
+**Output:**
+```swift
+struct Person {
+    var lastName: String
+    func withLastName(_ lastName: String) -> Person {
+        var result = self
+        result.lastName = lastName
+        return result
+    }
+    var firstName: String
+    func withFirstName(_ firstName: String) -> Person { ... }
+    var age: Int
+    func withAge(_ age: Int) -> Person { ... }
+}
+```
+
+Key points:
+- `SourceFileSyntax { ... }` uses a result builder — `SwiftSyntaxBuilder` provides overloads for all node types.
+- String interpolation with `\(raw:)` embeds raw source text directly into a node without quoting.
+- `source.formatted()` applies the default `BasicFormat` to produce idiomatic indentation and spacing before printing.
+
+**Run it:**
+```bash
+swift run CodeGenerationUsingSwiftSyntaxBuilder
+```
+
+<Note>
+  swift-syntax itself uses `SwiftSyntaxBuilder` extensively for its own code generation. See the [`CodeGeneration/`](https://github.com/swiftlang/swift-syntax/tree/main/CodeGeneration) package for large-scale examples.
+</Note>
+
+</Accordion>
+
+---
+
+## Macro examples
+
+The `MacroExamples` target packages several expression macros into a compiler plugin executable (`ExamplePlugin`). Each macro is implemented in `Sources/MacroExamples/Implementation/`.
+
+<Accordion title="StringifyMacro: turning an expression into a (value, source) tuple">
+
+`#stringify(x + y)` expands to `(x + y, "x + y")` — a tuple of the evaluated result and its source representation. This is the canonical "hello world" of Swift macros.
+
+```swift
+import SwiftSyntax
+import SwiftSyntaxBuilder
+import SwiftSyntaxMacros
+
+public enum StringifyMacro: ExpressionMacro {
+  public static func expansion(
+    of node: some FreestandingMacroExpansionSyntax,
+    in context: some MacroExpansionContext
+  ) -> ExprSyntax {
+    guard let argument = node.arguments.first?.expression else {
+      fatalError("compiler bug: the macro does not have any arguments")
+    }
+
+    // String interpolation with \(literal:) quotes the description as a
+    // Swift string literal in the expanded source.
+    return "(\(argument), \(literal: argument.description))"
+  }
+}
+```
+
+Key points:
+- Conform to `ExpressionMacro` and implement `expansion(of:in:)` returning an `ExprSyntax`.
+- `node.arguments` gives you access to the macro's argument list as structured syntax nodes.
+- `\(literal:)` in a string interpolated `ExprSyntax` automatically escapes the value as a Swift literal.
+
+</Accordion>
+
+<Accordion title="URLMacro: compile-time URL validation">
+
+`#URL("https://example.com")` validates the string at compile time and expands to a non-optional `URL`. Invalid strings produce a compile error rather than a runtime crash.
+
+```swift
+import Foundation
+import SwiftSyntax
+import SwiftSyntaxMacros
+
+public enum URLMacro: ExpressionMacro {
+  public static func expansion(
+    of node: some FreestandingMacroExpansionSyntax,
+    in context: some MacroExpansionContext
+  ) throws -> ExprSyntax {
+    guard let argument = node.arguments.first?.expression,
+      let segments = argument.as(StringLiteralExprSyntax.self)?.segments,
+      segments.count == 1,
+      case .stringSegment(let literalSegment)? = segments.first
+    else {
+      throw CustomError.message("#URL requires a static string literal")
+    }
+
+    guard URL(string: literalSegment.content.text) != nil else {
+      throw CustomError.message("malformed url: \(argument)")
+    }
+
+    // Expand to a force-unwrapped URL(string:) call — safe because we
+    // validated the string above at compile time.
+    return "URL(string: \(argument))!"
+  }
+}
+```
+
+Key points:
+- Throwing from `expansion(of:in:)` produces a compiler error at the call site.
+- Downcast with `.as(StringLiteralExprSyntax.self)` to inspect the argument's structure.
+- The macro accesses the raw string content via `segments` to validate it before expansion.
+
+</Accordion>
+
+---
+
+## Real-world tools
+
+These open-source projects are built on swift-syntax and demonstrate production-scale usage:
+
+| Tool | What it does |
+|------|-------------|
+| [swift-format](https://github.com/swiftlang/swift-format) | Formatting technology for Swift source code |
+| [SwiftLint](https://github.com/realm/SwiftLint) | Enforces Swift style and conventions |
+| [Periphery](https://github.com/peripheryapp/periphery) | Detects unused code |
+| [Muter](https://github.com/muter-mutation-testing/muter) | Automated mutation testing for Swift |
+| [BartyCrouch](https://github.com/Flinesoft/BartyCrouch) | Incrementally updates strings files for localization |
+| [Sitrep](https://github.com/twostraws/Sitrep) | Source code analyzer for Swift projects |
+| [Swift AST Explorer](https://swift-ast-explorer.com/) | Interactive AST visualizer in the browser |
+| [Swift Stress Tester](https://github.com/swiftlang/swift-stress-tester) | Test driver for `sourcekitd` and Swift evolution |
+| [Hatch](https://github.com/sdidla/Hatch) | Hierarchical symbol list parser |

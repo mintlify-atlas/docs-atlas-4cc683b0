@@ -1,0 +1,359 @@
+---
+title: "SwiftSyntaxMacros"
+description: "Protocols for implementing freestanding and attached Swift macros."
+---
+
+## Overview
+
+`SwiftSyntaxMacros` defines the protocols that macro implementation types conform to. Every macro you write will conform to one of these protocols depending on its role. The library is intentionally thin — it contains only protocols and supporting types, not an expansion engine. For in-process expansion see [SwiftSyntaxMacroExpansion](/api/swift-syntax-macro-expansion).
+
+---
+
+## Base protocol
+
+### `Macro`
+
+The root protocol that all macro types inherit from.
+
+```swift
+public protocol Macro {
+  static var formatMode: FormatMode { get }
+}
+```
+
+The default implementation returns `.auto`.
+
+### `FormatMode`
+
+Controls how the expanded source text is formatted before it is handed back to the compiler.
+
+```swift
+public enum FormatMode: Sendable {
+  /// Apply a basic automatic format (whitespace, newlines, indentation).
+  case auto
+
+  /// Return the expansion exactly as written; trivia must be managed manually.
+  case disabled
+}
+```
+
+Override `formatMode` on your macro type when you are generating code whose exact whitespace is significant, or when you want full control over formatting.
+
+---
+
+## Freestanding macros
+
+Freestanding macros are invoked with the `#` prefix, e.g. `#stringify(x)`.
+
+### `FreestandingMacro`
+
+Marker protocol that all `#`-prefixed macros inherit from.
+
+```swift
+public protocol FreestandingMacro: Macro {}
+```
+
+### `ExpressionMacro`
+
+Expands to a single expression. The most common freestanding role.
+
+```swift
+public protocol ExpressionMacro: FreestandingMacro {
+  static func expansion(
+    of node: some FreestandingMacroExpansionSyntax,
+    in context: some MacroExpansionContext
+  ) throws -> ExprSyntax
+}
+```
+
+**Example — `#stringify`**
+
+```swift
+import SwiftSyntax
+import SwiftSyntaxMacros
+
+public struct StringifyMacro: ExpressionMacro {
+  public static func expansion(
+    of node: some FreestandingMacroExpansionSyntax,
+    in context: some MacroExpansionContext
+  ) throws -> ExprSyntax {
+    guard let argument = node.arguments.first?.expression else {
+      fatalError("#stringify requires an argument")
+    }
+    return "(\(argument), \(literal: argument.description))"
+  }
+}
+```
+
+Usage: `let result = #stringify(1 + 2)` expands to `(1 + 2, "1 + 2")`.
+
+### `DeclarationMacro`
+
+Expands to zero or more top-level or member declarations.
+
+```swift
+public protocol DeclarationMacro: FreestandingMacro {
+  static func expansion(
+    of node: some FreestandingMacroExpansionSyntax,
+    in context: some MacroExpansionContext
+  ) throws -> [DeclSyntax]
+
+  /// Whether to copy attributes from the expansion syntax to expanded
+  /// declarations. Defaults to `true`.
+  static var propagateFreestandingMacroAttributes: Bool { get }
+
+  /// Whether to copy modifiers from the expansion syntax to expanded
+  /// declarations. Defaults to `true`.
+  static var propagateFreestandingMacroModifiers: Bool { get }
+}
+```
+
+### `CodeItemMacro`
+
+Expands to a sequence of code block items (statements, expressions, or declarations) inside a function or closure body.
+
+```swift
+public protocol CodeItemMacro: FreestandingMacro {
+  static func expansion(
+    of node: some FreestandingMacroExpansionSyntax,
+    in context: some MacroExpansionContext
+  ) throws -> [CodeBlockItemSyntax]
+}
+```
+
+---
+
+## Attached macros
+
+Attached macros are applied with custom attribute syntax, e.g. `@MyMacro`. They are attached to an existing declaration and can augment it in various ways.
+
+### `AttachedMacro`
+
+Marker protocol that all `@`-style macro protocols inherit from.
+
+```swift
+public protocol AttachedMacro: Macro {}
+```
+
+### `AccessorMacro`
+
+Synthesizes accessors (`get`, `set`, `willSet`, `didSet`, …) for a stored property or subscript.
+
+```swift
+public protocol AccessorMacro: AttachedMacro {
+  static func expansion(
+    of node: AttributeSyntax,
+    providingAccessorsOf declaration: some DeclSyntaxProtocol,
+    in context: some MacroExpansionContext
+  ) throws -> [AccessorDeclSyntax]
+}
+```
+
+### `MemberMacro`
+
+Adds new member declarations (stored properties, methods, nested types, …) to the type it is attached to.
+
+```swift
+public protocol MemberMacro: AttachedMacro {
+  /// Preferred overload — receives the list of protocol conformances the
+  /// macro is expected to provide supporting members for.
+  static func expansion(
+    of node: AttributeSyntax,
+    providingMembersOf declaration: some DeclGroupSyntax,
+    conformingTo protocols: [TypeSyntax],
+    in context: some MacroExpansionContext
+  ) throws -> [DeclSyntax]
+
+  /// Legacy overload retained for backwards compatibility.
+  static func expansion(
+    of node: AttributeSyntax,
+    providingMembersOf declaration: some DeclGroupSyntax,
+    in context: some MacroExpansionContext
+  ) throws -> [DeclSyntax]
+}
+```
+
+Implement the `conformingTo:` variant. The legacy variant without `conformingTo` is provided by a default implementation that throws if neither overload is implemented.
+
+### `MemberAttributeMacro`
+
+Adds attributes to the *existing* members of the declaration it is attached to.
+
+```swift
+public protocol MemberAttributeMacro: AttachedMacro {
+  static func expansion(
+    of node: AttributeSyntax,
+    attachedTo declaration: some DeclGroupSyntax,
+    providingAttributesFor member: some DeclSyntaxProtocol,
+    in context: some MacroExpansionContext
+  ) throws -> [AttributeSyntax]
+}
+```
+
+The method is called once per member. Return an empty array for members that should not receive new attributes.
+
+### `PeerMacro`
+
+Generates peer declarations that are placed alongside the declaration the macro is attached to (at the same scope level).
+
+```swift
+public protocol PeerMacro: AttachedMacro {
+  static func expansion(
+    of node: AttributeSyntax,
+    providingPeersOf declaration: some DeclSyntaxProtocol,
+    in context: some MacroExpansionContext
+  ) throws -> [DeclSyntax]
+}
+```
+
+### `ExtensionMacro`
+
+Generates `extension` declarations for the type the macro is attached to. Only extension macros can declare new protocol conformances.
+
+```swift
+public protocol ExtensionMacro: AttachedMacro {
+  static func expansion(
+    of node: AttributeSyntax,
+    attachedTo declaration: some DeclGroupSyntax,
+    providingExtensionsOf type: some TypeSyntaxProtocol,
+    conformingTo protocols: [TypeSyntax],
+    in context: some MacroExpansionContext
+  ) throws -> [ExtensionDeclSyntax]
+}
+```
+
+`protocols` contains only the conformances that `type` does not already explicitly state.
+
+### `BodyMacro`
+
+Synthesizes or replaces the body of a function or closure that has no body, or replaces an existing getter body.
+
+```swift
+public protocol BodyMacro: AttachedMacro {
+  /// Provide a body for a function declaration.
+  static func expansion(
+    of node: AttributeSyntax,
+    providingBodyFor declaration: some DeclSyntaxProtocol & WithOptionalCodeBlockSyntax,
+    in context: some MacroExpansionContext
+  ) throws -> [CodeBlockItemSyntax]
+
+  /// Provide a body for a closure expression.
+  /// Default implementation throws an error (closures not supported).
+  static func expansion(
+    of node: AttributeSyntax,
+    providingBodyFor closure: ClosureExprSyntax,
+    in context: some MacroExpansionContext
+  ) throws -> [CodeBlockItemSyntax]
+}
+```
+
+### `PreambleMacro`
+
+Inserts statements at the *beginning* of an existing function body. Marked `@_spi(ExperimentalLanguageFeatures)`.
+
+```swift
+@_spi(ExperimentalLanguageFeatures)
+public protocol PreambleMacro: AttachedMacro {
+  static func expansion(
+    of node: AttributeSyntax,
+    providingPreambleFor declaration: some DeclSyntaxProtocol & WithOptionalCodeBlockSyntax,
+    in context: some MacroExpansionContext
+  ) throws -> [CodeBlockItemSyntax]
+}
+```
+
+---
+
+## MacroExpansionContext
+
+The context object passed to every `expansion` method. Provides services a macro needs during expansion.
+
+```swift
+public protocol MacroExpansionContext: AnyObject {
+
+  /// Return a unique identifier token whose name will not conflict with any
+  /// other name in a well-formed program.
+  func makeUniqueName(_ name: String) -> TokenSyntax
+
+  /// Emit a diagnostic (warning, error, note, …) pointing at a syntax node.
+  func diagnose(_ diagnostic: Diagnostic)
+
+  /// Return the source location of `node` at a given `position`, using the
+  /// specified file path style.
+  func location(
+    of node: some SyntaxProtocol,
+    at position: PositionInSyntaxNode,
+    filePathMode: SourceLocationFilePathMode
+  ) -> AbstractSourceLocation?
+
+  /// Convenience overload: location at `.afterLeadingTrivia` using `.fileID`.
+  func location(of node: some SyntaxProtocol) -> AbstractSourceLocation?
+
+  /// Enclosing lexical context nodes (innermost first), with bodies and
+  /// member lists stripped to prevent unintended visibility.
+  var lexicalContext: [Syntax] { get }
+
+  /// The active build configuration, or `nil` when not provided by the host.
+  var buildConfiguration: (any BuildConfiguration)? { get }
+}
+```
+
+`PositionInSyntaxNode` and `SourceLocationFilePathMode` are supporting enums:
+
+```swift
+public enum PositionInSyntaxNode {
+  case beforeLeadingTrivia   // Start of leading trivia
+  case afterLeadingTrivia    // Start of first token (default)
+  case beforeTrailingTrivia  // End of last token
+  case afterTrailingTrivia   // Past all trailing trivia
+}
+
+public enum SourceLocationFilePathMode {
+  case fileID    // "ModuleName/FileName.swift"  (like #fileID)
+  case filePath  // Full absolute path           (like #filePath)
+}
+```
+
+---
+
+## AbstractSourceLocation
+
+A source location expressed as syntax nodes rather than raw integers, so the values can be embedded directly into generated code.
+
+```swift
+public struct AbstractSourceLocation: Sendable {
+  /// Expression whose value conforms to `ExpressibleByStringLiteral` (the file name).
+  public let file: ExprSyntax
+
+  /// Expression whose value conforms to `ExpressibleByIntegerLiteral` (1-based line number).
+  public let line: ExprSyntax
+
+  /// Expression whose value conforms to `ExpressibleByIntegerLiteral` (1-based column number).
+  public let column: ExprSyntax
+
+  public init(file: ExprSyntax, line: ExprSyntax, column: ExprSyntax)
+  public init(_ sourceLocation: SourceLocation)
+}
+```
+
+Use `context.location(of:)` to obtain an `AbstractSourceLocation`, then splice `location.file`, `location.line`, and `location.column` into generated expressions when you need runtime source-location values.
+
+---
+
+## Protocol hierarchy
+
+```
+Macro
+├── FreestandingMacro
+│   ├── ExpressionMacro       → ExprSyntax
+│   ├── DeclarationMacro      → [DeclSyntax]
+│   └── CodeItemMacro         → [CodeBlockItemSyntax]
+└── AttachedMacro
+    ├── AccessorMacro         → [AccessorDeclSyntax]
+    ├── MemberMacro           → [DeclSyntax]
+    ├── MemberAttributeMacro  → [AttributeSyntax]
+    ├── PeerMacro             → [DeclSyntax]
+    ├── ExtensionMacro        → [ExtensionDeclSyntax]
+    ├── BodyMacro             → [CodeBlockItemSyntax]
+    └── PreambleMacro         → [CodeBlockItemSyntax]  (experimental)
+```

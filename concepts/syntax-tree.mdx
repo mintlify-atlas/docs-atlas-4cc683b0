@@ -1,0 +1,209 @@
+---
+title: "The syntax tree"
+description: "How swift-syntax represents Swift source code as an immutable, source-accurate tree of typed nodes."
+---
+
+Swift source code is represented in swift-syntax as a **concrete syntax tree** — a fully typed, immutable tree that captures every byte of the original source, including whitespace and comments. This page explains the structure of that tree and the types you'll interact with most often.
+
+<Note>
+The tree is sometimes called a "Concrete Syntax Tree" (CST) rather than an "Abstract Syntax Tree" (AST) because it retains all source details, including trivia such as whitespace and comments. Nothing is dropped.
+</Note>
+
+## Node types
+
+Every node in the tree conforms to `SyntaxProtocol`. There are three categories of nodes.
+
+<CardGroup cols={3}>
+  <Card title="Syntax" icon="circle">
+    The type-erased base node. Wraps any concrete node and allows generic traversal without knowing the specific kind.
+  </Card>
+  <Card title="Typed nodes" icon="tag">
+    Concrete nodes like `FunctionDeclSyntax`, `StructDeclSyntax`, and `IfExprSyntax`. Each node type exposes strongly typed child accessors.
+  </Card>
+  <Card title="TokenSyntax" icon="text">
+    Leaf nodes that carry actual source text. Every character in the source file lives inside a `TokenSyntax`.
+  </Card>
+</CardGroup>
+
+### `SyntaxProtocol`
+
+`SyntaxProtocol` is the root protocol for all syntax nodes. You should not conform your own types to it. It provides:
+
+- **Casting** — `is(_:)`, `as(_:)`, and `cast(_:)` for moving between typed nodes and the type-erased `Syntax`.
+- **Modification** — `with(_:_:)` returns an immutable copy of the node with one child replaced.
+- **Traversal** — `children(viewMode:)`, `parent`, `root`, `previousToken(viewMode:)`, `nextToken(viewMode:)`.
+- **Position** — `position`, `endPosition`, `range`, `trimmedRange` reporting byte offsets into the source.
+- **Trivia** — `leadingTrivia` and `trailingTrivia` getters and setters (see [Trivia](/concepts/trivia)).
+- **Identity** — `id` returning a `SyntaxIdentifier` that uniquely identifies the node within its tree.
+
+```swift
+import SwiftSyntax
+
+func inspect(_ node: some SyntaxProtocol) {
+    print(node.kind)                         // e.g. functionDecl
+    print(node.position.utf8Offset)          // byte offset in source
+    print(node.trimmedDescription)           // source text without surrounding trivia
+}
+```
+
+### Casting between node types
+
+Use `as(_:)` for a safe optional cast and `cast(_:)` when the cast must succeed:
+
+```swift
+let syntax: Syntax = ...
+
+if let funcDecl = syntax.as(FunctionDeclSyntax.self) {
+    print(funcDecl.name.text)
+}
+
+// `is` tests without casting
+if syntax.is(VariableDeclSyntax.self) {
+    print("it's a var or let")
+}
+```
+
+## `TokenSyntax` — the leaf nodes
+
+`TokenSyntax` is the only node type that carries actual source text. All layout nodes (e.g. `FunctionDeclSyntax`) are composed of child tokens and other layout nodes. Tokens carry:
+
+| Property | Type | Description |
+|---|---|---|
+| `tokenKind` | `TokenKind` | The kind of token (`.identifier`, `.keyword(.func)`, `.integerLiteral`, …) |
+| `text` | `String` | The token's source text, without trivia |
+| `leadingTrivia` | `Trivia` | Whitespace/comments before the token |
+| `trailingTrivia` | `Trivia` | Whitespace/comments after the token |
+| `presence` | `SourcePresence` | `.present` or `.missing` (inserted by the parser during error recovery) |
+
+```swift
+import SwiftSyntax
+import SwiftParser
+
+let source = "func greet(name: String) {}"
+let tree = Parser.parse(source: source)
+
+if let funcDecl = tree.statements.first?.item.as(FunctionDeclSyntax.self) {
+    let nameToken: TokenSyntax = funcDecl.name
+    print(nameToken.text)              // "greet"
+    print(nameToken.tokenKind)         // identifier("greet")
+    print(nameToken.leadingTrivia)     // " " (one space after "func")
+}
+```
+
+## `SyntaxCollection` — typed lists of nodes
+
+Many syntax nodes contain a sequence of children of a uniform type. These are modelled as types conforming to `SyntaxCollection`, which is itself a `BidirectionalCollection` of `SyntaxProtocol` elements.
+
+```swift
+public protocol SyntaxCollection: SyntaxProtocol, BidirectionalCollection, ExpressibleByArrayLiteral
+    where Element: SyntaxProtocol, Index == SyntaxChildrenIndex
+```
+
+Common examples:
+
+| Collection type | Element type |
+|---|---|
+| `FunctionParameterListSyntax` | `FunctionParameterSyntax` |
+| `CodeBlockItemListSyntax` | `CodeBlockItemSyntax` |
+| `MemberBlockItemListSyntax` | `MemberBlockItemSyntax` |
+| `AttributeListSyntax` | `AttributeSyntax` |
+
+Because `SyntaxCollection` is a `BidirectionalCollection`, you can use all standard Swift collection algorithms on it:
+
+```swift
+import SwiftSyntax
+import SwiftParser
+
+let source = """
+func greet(firstName: String, lastName: String) {}
+"""
+let tree = Parser.parse(source: source)
+
+if let funcDecl = tree.statements.first?.item.as(FunctionDeclSyntax.self) {
+    let params: FunctionParameterListSyntax = funcDecl.signature.parameterClause.parameters
+    for param in params {
+        print(param.firstName.text)  // "firstName", then "lastName"
+    }
+    print("parameter count:", params.count)
+}
+```
+
+## Tree structure
+
+Every node participates in the same tree:
+
+- `node.parent` returns the parent node as the type-erased `Syntax`, or `nil` for the root.
+- `node.root` walks to the root of the tree, always a `SourceFileSyntax` when parsing a file.
+- `node.hasParent` is a fast check that avoids allocating a `Syntax`.
+- `node.keyPathInParent` gives the `WritableKeyPath` from the parent to this node, useful for building rewriters.
+
+```swift
+let funcDecl: FunctionDeclSyntax = ...
+
+if let parent = funcDecl.parent {
+    print(type(of: parent))     // e.g. MemberBlockItemSyntax
+}
+print(funcDecl.root.kind)       // sourceFile
+```
+
+### Position and ranges
+
+All positions are measured in UTF-8 bytes from the start of the source file.
+
+| Property | Description |
+|---|---|
+| `position` | Start of the node including leading trivia |
+| `positionAfterSkippingLeadingTrivia` | Start of the node's content |
+| `endPositionBeforeTrailingTrivia` | End of the node's content |
+| `endPosition` | End of the node including trailing trivia |
+| `range` | `position..<endPosition` |
+| `trimmedRange` | `positionAfterSkippingLeadingTrivia..<endPositionBeforeTrailingTrivia` |
+
+### Error flags
+
+The `hasError` property returns `true` if the subtree contains any missing or unexpected nodes, or any token with an error diagnostic. This is a fast O(1) check backed by a recursive flag stored in the raw tree.
+
+```swift
+let tree = Parser.parse(source: "func {}")   // missing function name
+print(tree.hasError)   // true
+```
+
+## `SyntaxIdentifier` — unique node identity
+
+Each `Syntax` node exposes an `id: SyntaxIdentifier`. Two nodes with the same `id` refer to the same node in the same tree. This is useful when you want to track a specific node across multiple passes or highlight a node in diagnostic output.
+
+```swift
+let id: SyntaxIdentifier = funcDecl.id
+
+// Recover the node from the root using its identifier
+if let recovered = tree.node(at: id) {
+    print(recovered.kind)
+}
+```
+
+<Note>
+`SyntaxIdentifier` encodes both the root of the tree and the index of the node within that tree. An identifier from one tree cannot be used to look up a node in a different tree.
+</Note>
+
+## Immutability and copy-on-write
+
+All syntax nodes are value types. Modifying a child via `with(_:_:)` creates a new node — and a new tree — without touching the original:
+
+```swift
+let original: FunctionDeclSyntax = ...
+let renamed = original.with(\.name, .identifier("newName"))
+
+print(original.name.text)  // unchanged
+print(renamed.name.text)   // "newName"
+```
+
+The underlying memory is managed by a `SyntaxDataArena` shared across all nodes in the same tree. When you call `with(_:_:)`, a new arena is created for the modified subtree, and existing unchanged subtrees are re-used without copying.
+
+<CardGroup cols={2}>
+  <Card title="Parsing" href="/concepts/parsing">
+    Learn how to turn Swift source text into a syntax tree.
+  </Card>
+  <Card title="Trivia" href="/concepts/trivia">
+    Understand how whitespace and comments are stored on tokens.
+  </Card>
+</CardGroup>

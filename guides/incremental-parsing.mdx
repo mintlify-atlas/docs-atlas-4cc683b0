@@ -1,0 +1,204 @@
+---
+title: "Incremental Parsing"
+description: "Re-parse only changed regions of a Swift source file for high-performance editor integrations."
+---
+
+Incremental parsing lets the parser skip regions of a source file that have not changed, reusing subtrees from the previous parse result instead of rebuilding them from scratch. This is especially valuable in editor integrations and language servers where the parser runs on every keystroke.
+
+## When to use incremental parsing
+
+Full parses of large files are fast, but in latency-sensitive contexts — an LSP responding to document-change notifications, or a live-feedback tool running in a text editor — incremental parsing reduces CPU work and keeps allocations proportional to the size of the edit rather than the size of the file.
+
+<Note>
+For one-off parses or batch processing, use `Parser.parse(source:)`. Incremental parsing adds coordination overhead (storing the previous result, computing edits) that is only worthwhile when you parse the same file repeatedly.
+</Note>
+
+---
+
+## Key types
+
+### IncrementalParseResult
+
+`IncrementalParseResult` is returned by `Parser.parseIncrementally` and must be kept around between parses. It bundles the syntax tree with the lookahead metadata the parser needs to decide which nodes are safe to reuse.
+
+```swift
+public struct IncrementalParseResult: Sendable {
+    public let tree: SourceFileSyntax
+    public let lookaheadRanges: LookaheadRanges
+}
+```
+
+### SourceEdit
+
+`SourceEdit` describes a single change to the source buffer as a byte range in the original text and the replacement string.
+
+```swift
+public struct SourceEdit: Equatable, Sendable {
+    /// The byte range of the original source buffer that the edit applies to.
+    public let range: Range<AbsolutePosition>
+
+    /// The UTF-8 bytes that replace the range.
+    public let replacementBytes: [UInt8]
+
+    /// Convenience string accessor for the replacement.
+    public var replacement: String { get }
+}
+```
+
+Construct a `SourceEdit` from a byte range and a replacement string:
+
+```swift
+let edit = SourceEdit(
+    range: AbsolutePosition(utf8Offset: 10)..<AbsolutePosition(utf8Offset: 17),
+    replacement: "goodbye"
+)
+```
+
+### ConcurrentEdits
+
+`ConcurrentEdits` wraps one or more `SourceEdit` values. All offsets in a `ConcurrentEdits` refer to positions in the *original* source buffer — they are not shifted by earlier edits in the same batch.
+
+```swift
+// Single edit
+let concurrent = ConcurrentEdits(singleEdit)
+
+// Multiple independent edits applied simultaneously
+let concurrent = try ConcurrentEdits(concurrent: [edit1, edit2])
+
+// Multiple sequential edits (applied one after another; offsets shift)
+let concurrent = ConcurrentEdits(fromSequential: [edit1, edit2])
+```
+
+<Warning>
+When passing multiple edits to `ConcurrentEdits(concurrent:)`, the edits must be non-overlapping and sorted by ascending source offset. If either condition is violated the initializer throws. Use `ConcurrentEdits(fromSequential:)` when your edits are expressed relative to a progressively modified buffer.
+</Warning>
+
+### IncrementalParseTransition
+
+`IncrementalParseTransition` combines the previous `IncrementalParseResult` with the `ConcurrentEdits` that have been applied since that parse. Pass it to `parseIncrementally` to re-use unchanged subtrees.
+
+```swift
+public final class IncrementalParseTransition {
+    public init(
+        previousIncrementalParseResult: IncrementalParseResult,
+        edits: ConcurrentEdits,
+        reusedNodeCallback: ReusedNodeCallback? = nil
+    )
+}
+```
+
+The optional `reusedNodeCallback` closure is called for each syntax node the parser reuses from the old tree. You can use this to verify that reuse is occurring as expected.
+
+---
+
+## How the parser reuses unchanged subtrees
+
+When parsing with a transition, the parser checks each node it is about to parse against a lookup table built from the previous tree. A node from the old tree can be reused when:
+
+1. Its position in the new source matches its position in the old source (after accounting for edits).
+2. Its syntax kind matches what the parser expects at that position.
+3. The lookahead range recorded when it was originally parsed does not overlap any of the edits — meaning the parser would have made the same decisions even with the changed tokens.
+
+Nodes that pass all three checks are grafted directly into the new tree without re-lexing or re-parsing their content.
+
+---
+
+## Step-by-step example
+
+<Steps>
+  <Step title="Parse the initial source">
+    Use `Parser.parseIncrementally` with `parseTransition: nil` to get the first `IncrementalParseResult`. Save the entire result — both the tree and the lookahead ranges are needed for the next parse.
+
+    ```swift
+    import SwiftParser
+    import SwiftSyntax
+
+    let initialSource = """
+    func greet(name: String) {
+        print("hello, \\(name)")
+    }
+    """
+
+    let firstResult = Parser.parseIncrementally(
+        source: initialSource,
+        parseTransition: nil
+    )
+    // firstResult.tree is the SourceFileSyntax
+    // firstResult.lookaheadRanges is required for the next incremental parse
+    ```
+  </Step>
+
+  <Step title="Apply an edit to the source text">
+    Modify the source string in your editor buffer and record what changed as a `SourceEdit`. The range refers to byte offsets in the *original* source string.
+
+    ```swift
+    // Replace "hello" (bytes 35–40) with "goodbye"
+    let updatedSource = """
+    func greet(name: String) {
+        print("goodbye, \\(name)")
+    }
+    """
+
+    let edit = SourceEdit(
+        range: AbsolutePosition(utf8Offset: 35)..<AbsolutePosition(utf8Offset: 40),
+        replacement: "goodbye"
+    )
+    ```
+  </Step>
+
+  <Step title="Build an IncrementalParseTransition">
+    Wrap the edit and the previous result in an `IncrementalParseTransition`.
+
+    ```swift
+    let transition = IncrementalParseTransition(
+        previousIncrementalParseResult: firstResult,
+        edits: ConcurrentEdits(edit)
+    )
+    ```
+  </Step>
+
+  <Step title="Re-parse with the transition">
+    Call `Parser.parseIncrementally` with the updated source and the transition. Nodes outside the edited region — the function signature, braces, and unaffected statements — are reused from the old tree.
+
+    ```swift
+    let secondResult = Parser.parseIncrementally(
+        source: updatedSource,
+        parseTransition: transition
+    )
+
+    // secondResult.tree reflects the updated source
+    // Store secondResult for the next incremental parse
+    ```
+  </Step>
+</Steps>
+
+---
+
+## Observing reused nodes
+
+Pass a `reusedNodeCallback` to `IncrementalParseTransition` to receive a callback for each node the parser takes from the old tree:
+
+```swift
+var reusedNodes: [Syntax] = []
+
+let transition = IncrementalParseTransition(
+    previousIncrementalParseResult: firstResult,
+    edits: ConcurrentEdits(edit),
+    reusedNodeCallback: { node in
+        reusedNodes.append(node)
+    }
+)
+
+let result = Parser.parseIncrementally(
+    source: updatedSource,
+    parseTransition: transition
+)
+
+print("Reused \(reusedNodes.count) nodes")
+```
+
+This is useful for verifying that incremental parsing is working as expected in tests or for gathering performance metrics.
+
+<Note>
+Store the `IncrementalParseResult` returned by each call to `parseIncrementally`, not just the `tree`. The `lookaheadRanges` inside the result are what enable reuse in the subsequent parse.
+</Note>

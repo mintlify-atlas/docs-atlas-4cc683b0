@@ -1,0 +1,196 @@
+---
+title: "Traversing syntax trees"
+description: "Walk, search, and rewrite Swift syntax trees using SyntaxVisitor and SyntaxRewriter."
+---
+
+SwiftSyntax provides two primary mechanisms for traversing a syntax tree: `SyntaxVisitor` for read-only walks, and `SyntaxRewriter` for transformations that produce a new tree. Both work on the same immutable tree representation — mutations always produce a new node rather than modifying in place.
+
+## SyntaxVisitor
+
+`SyntaxVisitor` is an open class you subclass to collect information from a tree without modifying it. For every concrete syntax node type, the visitor exposes two overridable methods:
+
+- `visit(_:) -> SyntaxVisitorContinueKind` — called when the node is first entered. Return `.visitChildren` to recurse, or `.skipChildren` to skip the subtree.
+- `visitPost(_:)` — called after all children have been visited (only reached when you returned `.visitChildren`).
+
+Start the walk by calling `walk(_:)` on your visitor instance, passing any `SyntaxProtocol` node.
+
+```swift
+import SwiftParser
+import SwiftSyntax
+
+/// Collects the names of all function declarations in a file.
+final class FunctionNameCollector: SyntaxVisitor {
+    var names: [String] = []
+
+    override func visit(_ node: FunctionDeclSyntax) -> SyntaxVisitorContinueKind {
+        names.append(node.name.text)
+        return .visitChildren  // descend into the function body too
+    }
+}
+
+let source = """
+    func greet() {}
+    func farewell() {}
+    """
+let tree = Parser.parse(source: source)
+
+let collector = FunctionNameCollector(viewMode: .sourceAccurate)
+collector.walk(tree)
+print(collector.names)  // ["greet", "farewell"]
+```
+
+### Controlling descent
+
+Returning `.skipChildren` avoids visiting any child nodes of the current node. This is useful when you know the subtree is not relevant — for example, skipping function bodies when you only care about top-level declarations:
+
+```swift
+override func visit(_ node: FunctionDeclSyntax) -> SyntaxVisitorContinueKind {
+    names.append(node.name.text)
+    return .skipChildren  // do not recurse into the function body
+}
+```
+
+### View mode
+
+The `viewMode` parameter passed to `SyntaxVisitor.init(viewMode:)` controls which nodes are traversed:
+
+<CardGroup cols={2}>
+  <Card title=".sourceAccurate">
+    Visits only tokens that are present in the source. Missing tokens (inserted by error recovery) are excluded. Use this for most analysis tasks.
+  </Card>
+  <Card title=".all">
+    Visits every node including missing and unexpected tokens. Useful when you need to understand exactly what the parser produced, including error-recovery insertions.
+  </Card>
+</CardGroup>
+
+---
+
+## SyntaxRewriter
+
+`SyntaxRewriter` is an open class you subclass to produce a transformed copy of a tree. Override `visit(_:)` for the node types you want to change; return the (possibly modified) node. Unoverridden nodes are passed through unchanged.
+
+Call `rewrite(_:)` on your rewriter instance to obtain the transformed root node.
+
+<Note>
+`SyntaxRewriter` never mutates the original tree. Every overridden `visit` method receives the original node and must return the node to use in its place — either the same node or a new one.
+</Note>
+
+The example below is adapted directly from the `AddOneToIntegerLiterals` example in the swift-syntax repository. It increments every integer literal in a source file:
+
+```swift
+import SwiftParser
+import SwiftSyntax
+
+/// Visits each token and increments integer literal values by 1.
+///
+/// For example, transforms:
+///   let x = 2
+///   let y = 3_000
+/// into:
+///   let x = 3
+///   let y = 3001
+private class AddOneToIntegerLiterals: SyntaxRewriter {
+    override func visit(_ token: TokenSyntax) -> TokenSyntax {
+        // Only transform integer literals.
+        guard case .integerLiteral(let text) = token.tokenKind else {
+            return token
+        }
+
+        // Remove underscores from the original text.
+        let integerText = String(text.filter { ("0"..."9").contains($0) })
+
+        // Parse out the integer.
+        let int = Int(integerText)!
+
+        // Create a new integer literal token with `int + 1` as its text.
+        var newToken = token
+        newToken.tokenKind = .integerLiteral("\(int + 1)")
+        return newToken
+    }
+}
+
+let source = "let x = 2\nlet y = 3_000"
+let tree = Parser.parse(source: source)
+let rewritten = AddOneToIntegerLiterals().rewrite(tree)
+print(rewritten)
+// let x = 3
+// let y = 3001
+```
+
+### Casting the return value
+
+`SyntaxRewriter` dispatch methods accept and return the specific concrete node type, so you do not need to cast back to the supertype in simple cases. When you override `visit(_ node: FunctionDeclSyntax)`, you return a `FunctionDeclSyntax`. If you want to replace a node with a different node kind you must upcast — but the most common case is returning the same typed node with modified children using `with(_:_:)`.
+
+---
+
+## Searching without a full walker
+
+For lightweight queries where you do not need to visit every node, `SyntaxProtocol` provides several targeted APIs.
+
+### Casting: `.as(_:)`, `.is(_:)`, `.cast(_:)`
+
+Every syntax node can be cast to another type:
+
+```swift
+let node: Syntax = someDecl
+
+// Safe cast — returns nil if the node is not a FunctionDeclSyntax
+if let funcDecl = node.as(FunctionDeclSyntax.self) {
+    print(funcDecl.name.text)
+}
+
+// Type check only
+if node.is(ClassDeclSyntax.self) {
+    // ...
+}
+
+// Force cast — crashes if the type does not match
+let funcDecl = node.cast(FunctionDeclSyntax.self)
+```
+
+### Iterating tokens
+
+`tokens(viewMode:)` returns a lazy `TokenSequence` over every leaf token in the subtree. This is the most efficient way to scan raw text without constructing a full visitor:
+
+```swift
+for token in tree.tokens(viewMode: .sourceAccurate) {
+    if case .integerLiteral(let text) = token.tokenKind {
+        print("Found integer: \(text)")
+    }
+}
+```
+
+### Iterating children
+
+`children(viewMode:)` returns a `SyntaxChildren` collection — a bidirectional collection of the immediate `Syntax` children of a node:
+
+```swift
+for child in someNode.children(viewMode: .sourceAccurate) {
+    print(child.kind)
+}
+```
+
+### Walking up the tree
+
+Every node carries a reference to its parent. Use `parent`, `root`, and `ancestorOrSelf(mapping:)` to walk upward:
+
+```swift
+// Walk up to find the enclosing function declaration
+let enclosingFunc = token.ancestorOrSelf { $0.as(FunctionDeclSyntax.self) }
+```
+
+---
+
+## Performance tips
+
+<Accordion title="Return .skipChildren early">
+If your visitor is only interested in, for example, top-level declarations and never needs to look inside function bodies, return `.skipChildren` from `visit(_ node: FunctionDeclSyntax)`. This avoids allocating child nodes for the entire subtree.
+</Accordion>
+
+<Accordion title="Prefer tokens(viewMode:) for token-level scans">
+Walking tokens directly with `tokens(viewMode:)` is cheaper than subclassing `SyntaxVisitor` when you only need to examine leaf tokens. There is no per-node dispatch overhead.
+</Accordion>
+
+<Accordion title="Use .sourceAccurate unless you need error nodes">
+`SyntaxTreeViewMode.all` causes the visitor to visit missing and unexpected nodes produced by error recovery. Unless you are building a diagnostic or formatter that needs to understand parse errors, use `.sourceAccurate` to skip those nodes.
+</Accordion>

@@ -1,97 +1,61 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
+title: "swift-syntax"
+description: "A set of Swift libraries for parsing, inspecting, generating, and transforming Swift source code — the backbone of Swift's macro system."
 ---
 
-## Setting up
+swift-syntax gives you a source-accurate, immutable syntax tree for any Swift source file. Use it to parse Swift code, build code generators, write Swift macros, implement refactoring actions, or create editor tooling — all without depending on a specific Swift toolchain version.
 
-Get your documentation site up and running in minutes.
-
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
-
-## Make it yours
-
-Design a docs site that looks great and empowers your users.
-
-<Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
+<CardGroup cols={2}>
+  <Card title="Installation" icon="box" href="/installation">
+    Add swift-syntax to your Swift package or Xcode project
   </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
+  <Card title="Quick Start" icon="rocket" href="/quickstart">
+    Parse your first Swift file and walk the syntax tree in minutes
   </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
+  <Card title="Core Concepts" icon="book" href="/concepts/syntax-tree">
+    Understand the SwiftSyntax tree, tokens, and trivia model
   </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
+  <Card title="API Reference" icon="code" href="/api/swift-syntax">
+    Explore the full public API surface across all modules
   </Card>
-</Columns>
+</CardGroup>
 
-## Create beautiful pages
+## What you can build
 
-Everything you need to create world-class documentation.
+<CardGroup cols={2}>
+  <Card title="Swift Macros" icon="wand-magic-sparkles" href="/guides/writing-macros">
+    Author freestanding and attached macros using SwiftSyntaxMacros and SwiftCompilerPlugin
+  </Card>
+  <Card title="Code Generators" icon="file-code" href="/guides/building-syntax">
+    Use SwiftSyntaxBuilder's result-builder DSL to generate Swift source programmatically
+  </Card>
+  <Card title="Syntax Tree Traversal" icon="sitemap" href="/guides/traversing-syntax-trees">
+    Walk and rewrite syntax trees with SyntaxVisitor and SyntaxRewriter
+  </Card>
+  <Card title="Refactoring Actions" icon="rotate" href="/guides/refactoring">
+    Implement source transformations with SwiftRefactor's provider protocol
+  </Card>
+</CardGroup>
 
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
-  </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
-  </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
-  </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
-  </Card>
-</Columns>
+## Library overview
 
-## Need inspiration?
+swift-syntax is a collection of focused, composable libraries. Most use cases only need a subset.
 
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+<Steps>
+  <Step title="Parse Swift source">
+    `SwiftParser` converts source text into a fully typed syntax tree with no toolchain dependency.
+  </Step>
+  <Step title="Inspect and traverse nodes">
+    `SwiftSyntax` provides `SyntaxProtocol`, `SyntaxVisitor`, `SyntaxRewriter`, and hundreds of typed syntax node types.
+  </Step>
+  <Step title="Generate new code">
+    `SwiftSyntaxBuilder` offers a result-builder DSL so you can construct valid Swift syntax nodes using familiar Swift syntax.
+  </Step>
+  <Step title="Write macros">
+    `SwiftSyntaxMacros` defines the macro protocol hierarchy. `SwiftCompilerPlugin` wires your macro implementations into the Swift compiler.
+  </Step>
+</Steps>
+
+<Note>
+  swift-syntax releases are aligned with Swift language releases. For example, version `600.x.x` targets Swift 6.0. Always use the version that matches your Swift toolchain.
+</Note>

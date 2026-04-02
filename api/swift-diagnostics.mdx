@@ -1,0 +1,181 @@
+---
+title: "SwiftDiagnostics"
+description: "Structured diagnostic messages, fix-its, and formatted output for Swift source analysis."
+---
+
+`SwiftDiagnostics` provides the types used to represent parse errors, warnings, notes, and fix-its throughout the swift-syntax library. It is used by `SwiftParser`, `SwiftSyntaxMacros`, and other libraries to report problems with source code.
+
+## Diagnostic
+
+`Diagnostic` is the central type. It pairs a message with the syntax node where the problem was detected, optional highlights, notes, and fix-its.
+
+```swift
+public struct Diagnostic: CustomDebugStringConvertible, Sendable {
+    public let diagMessage: DiagnosticMessage
+    public let node: Syntax
+    public let position: AbsolutePosition
+    public let highlights: [Syntax]
+    public let notes: [Note]
+    public let fixIts: [FixIt]
+
+    public init(
+        node: some SyntaxProtocol,
+        position: AbsolutePosition? = nil,
+        message: DiagnosticMessage,
+        highlights: [Syntax]? = nil,
+        notes: [Note] = [],
+        fixIts: [FixIt] = []
+    )
+}
+```
+
+| Property | Description |
+|---|---|
+| `diagMessage` | The message object providing text, severity, and ID |
+| `node` | The syntax node anchoring the diagnostic's source location |
+| `position` | Byte offset; defaults to the node's position after leading trivia |
+| `highlights` | Additional nodes to highlight in editor output |
+| `notes` | Secondary locations with contextual information |
+| `fixIts` | Suggested automatic fixes |
+
+### Convenience computed properties
+
+```swift
+var message: String         // diagMessage.message
+var diagnosticID: MessageID // diagMessage.diagnosticID
+func location(converter: SourceLocationConverter) -> SourceLocation
+```
+
+## DiagnosticMessage protocol
+
+Conform your custom message types to `DiagnosticMessage`:
+
+```swift
+public protocol DiagnosticMessage: Sendable {
+    var message: String { get }
+    var diagnosticID: MessageID { get }
+    var severity: DiagnosticSeverity { get }
+    var category: DiagnosticCategory? { get }
+}
+```
+
+### DiagnosticSeverity
+
+```swift
+public enum DiagnosticSeverity: Sendable, Hashable {
+    case error
+    case warning
+    case note
+    case remark
+}
+```
+
+### MessageID
+
+```swift
+public struct MessageID: Hashable, Sendable {
+    public init(domain: String, id: String)
+}
+```
+
+Use a reverse-DNS `domain` (e.g. `"com.example.MyLint"`) and a short `id` string to uniquely identify your diagnostic kind.
+
+## FixIt
+
+A `FixIt` describes an automatic fix for a diagnostic. Each fix consists of one or more `Change` values.
+
+```swift
+public struct FixIt: Sendable {
+    public let message: FixItMessage
+    public let changes: [Change]
+
+    public init(message: FixItMessage, changes: [Change])
+
+    // Computed property: non-overlapping SourceEdit values
+    public var edits: [SourceEdit] { get }
+}
+```
+
+### FixIt.Change
+
+```swift
+public enum FixIt.Change: Sendable {
+    case replace(oldNode: Syntax, newNode: Syntax)
+    case replaceLeadingTrivia(token: TokenSyntax, newTrivia: Trivia)
+    case replaceTrailingTrivia(token: TokenSyntax, newTrivia: Trivia)
+    case replaceChild(data: any ReplacingChildData)
+    case replaceText(range: Range<AbsolutePosition>, with: String, in: Syntax)
+}
+```
+
+### FixItMessage protocol
+
+```swift
+public protocol FixItMessage: Sendable {
+    var message: String { get }
+    var fixItID: MessageID { get }
+}
+```
+
+## DiagnosticsFormatter
+
+Format diagnostics as annotated source text, similar to the Swift compiler's output:
+
+```swift
+import SwiftDiagnostics
+import SwiftParser
+
+let source = "let x = 1 +"
+let tree = Parser.parse(source: source)
+let diags = ParseDiagnosticsGenerator.diagnostics(for: tree)
+
+let annotated = DiagnosticsFormatter.annotatedSource(
+    tree: tree,
+    diags: diags
+)
+print(annotated)
+```
+
+### Key methods
+
+```swift
+public struct DiagnosticsFormatter {
+    public static func annotatedSource(
+        tree: some SyntaxProtocol,
+        diags: [Diagnostic],
+        contextSize: Int = 2,
+        colorize: Bool = false
+    ) -> String
+}
+```
+
+## Collecting parser diagnostics
+
+After parsing, use `ParseDiagnosticsGenerator` (from `SwiftParserDiagnostics`) to extract diagnostics:
+
+```swift
+import SwiftParser
+import SwiftParserDiagnostics
+
+let source = "func foo( {}"   // missing closing paren
+let tree = Parser.parse(source: source)
+let diags = ParseDiagnosticsGenerator.diagnostics(for: tree)
+
+for diag in diags {
+    print("\(diag.diagMessage.severity): \(diag.message)")
+    for fixIt in diag.fixIts {
+        print("  fix-it: \(fixIt.message.message)")
+    }
+}
+```
+
+## DiagnosticsError
+
+Wraps an array of diagnostics as a thrown `Error`. At least one diagnostic must have `.error` severity.
+
+```swift
+public struct DiagnosticsError: Error, Sendable {
+    public var diagnostics: [Diagnostic]
+    public init(diagnostics: [Diagnostic])
+}
+```

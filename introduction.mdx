@@ -1,0 +1,78 @@
+---
+title: "Introduction"
+description: "swift-syntax is a collection of Swift libraries for parsing, inspecting, generating, and transforming Swift source code."
+---
+
+swift-syntax gives you programmatic access to Swift source code as a structured syntax tree. You can parse existing Swift files, walk and inspect every node, generate new Swift code, implement Swift macros, and build refactoring tools — all using a type-safe, source-accurate representation called the SwiftSyntax tree.
+
+## What you can build
+
+- **Parsers and linters** — read any Swift source file into a structured tree and inspect or validate every declaration, expression, and token
+- **Code generators** — produce Swift source programmatically using a result-builder DSL instead of string templates
+- **Swift macros** — implement attached and freestanding macros that expand into SwiftSyntax trees at compile time
+- **Refactoring tools** — rewrite syntax nodes while preserving whitespace and comments, thanks to source-accurate tree representation
+
+<Note>
+The SwiftSyntax tree is the backbone of Swift's macro system. Macro expansion nodes are represented as SwiftSyntax nodes, and a macro implementation returns a SwiftSyntax tree that the compiler inserts into the source file.
+</Note>
+
+## Library overview
+
+swift-syntax is a family of focused libraries. You import only the ones your target needs.
+
+| Library | Purpose |
+|---|---|
+| `SwiftSyntax` | Core syntax tree types, `SyntaxProtocol`, `SyntaxVisitor`, `SyntaxRewriter` |
+| `SwiftParser` | Parse Swift source strings and buffers into a `SourceFileSyntax` tree |
+| `SwiftSyntaxBuilder` | Result-builder DSL for constructing syntax trees in Swift code |
+| `SwiftSyntaxMacros` | Protocol definitions for implementing Swift macros |
+| `SwiftCompilerPlugin` | Entry-point infrastructure for compiler plugin executables |
+| `SwiftDiagnostics` | Represent and render structured diagnostics attached to syntax nodes |
+| `SwiftRefactor` | Base protocols for context-aware, single-step refactoring passes |
+| `SwiftIDEUtils` | Source-location utilities and token classification for editor tooling |
+| `SwiftOperators` | Fold operator expressions using precedence and associativity rules |
+| `SwiftBasicFormat` | Apply basic whitespace formatting to a syntax tree |
+| `SwiftIfConfig` | Evaluate `#if`/`#elseif`/`#else` configuration blocks |
+| `SwiftLexicalLookup` | Lexical scope name lookup within a syntax tree |
+
+<Info>
+`SwiftParserDiagnostics`, `SwiftSyntaxMacroExpansion`, `SwiftSyntaxMacrosTestSupport`, and `SwiftWarningControl` are also available as products for specialised use cases. See [Installation](/installation) for the full product list.
+</Info>
+
+## Swift macro system integration
+
+When the Swift compiler encounters a macro use, it invokes your macro implementation — a SwiftCompilerPlugin binary — and passes it the unapplied macro node as a `SwiftSyntax` tree. Your implementation uses `SwiftSyntaxMacros` protocols (`ExpressionMacro`, `MemberMacro`, `PeerMacro`, and others) to return a new `SwiftSyntax` tree. The compiler then substitutes that tree into the source file before compilation continues.
+
+Because macro inputs and outputs are ordinary SwiftSyntax nodes, the same parsing, visiting, and building APIs you use in command-line tools work identically inside a macro implementation.
+
+## Version alignment
+
+Releases of swift-syntax are aligned with Swift language and toolchain releases. The major version number matches the corresponding Swift release:
+
+| swift-syntax version | Swift release |
+|---|---|
+| 509.x.x | Swift 5.9 |
+| 510.x.x | Swift 5.10 |
+| 600.x.x | Swift 6.0 |
+| 601.x.x | Swift 6.1 |
+
+<Warning>
+Always match the swift-syntax version to the Swift toolchain you are building with. Mismatched versions can cause compiler plugin loading failures.
+</Warning>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Quick start" icon="bolt" href="/quickstart">
+    Parse your first Swift file and walk the syntax tree in five minutes.
+  </Card>
+  <Card title="Syntax tree concepts" icon="tree" href="/concepts/syntax-tree">
+    Learn how nodes, tokens, and trivia are structured in the SwiftSyntax tree.
+  </Card>
+  <Card title="Writing macros" icon="wand-magic-sparkles" href="/guides/writing-macros">
+    Implement attached and freestanding Swift macros using SwiftSyntaxMacros.
+  </Card>
+  <Card title="API reference" icon="code" href="/api/swift-syntax">
+    Browse the full API reference for all swift-syntax libraries.
+  </Card>
+</CardGroup>
